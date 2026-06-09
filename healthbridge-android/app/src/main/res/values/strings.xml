@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- App identity -->
+    <string name="app_name">HealthBridge</string>
+    <string name="app_tagline">Apple Health → Health Connect, offline.</string>
+
+    <!-- activity-alias label for the permissions rationale entry -->
+    <string name="permissions_rationale_label">HealthBridge Privacy</string>
+
+    <!-- Health Connect rationale / privacy copy -->
+    <string name="health_connect_rationale_title">Why HealthBridge needs Health Connect</string>
+    <string name="health_connect_rationale_body">HealthBridge reads existing records to deduplicate and writes only NEW workouts, steps, heart rate, sleep, active energy, resting heart rate, and VO2 max to Health Connect. Everything is processed on-device. No data ever leaves your phone.</string>
+    <string name="privacy_policy_title">Privacy Policy</string>
+    <string name="privacy_policy_body">HealthBridge is fully offline. There is no network access, no account, and no backend. Your Apple Health export is parsed in local cache and deleted immediately after processing.</string>
+
+    <!-- Generic navigation / actions -->
+    <string name="action_back">Back</string>
+    <string name="action_continue">Continue</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_retry">Retry</string>
+
+</resources>

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Declares the set of Health Connect permission strings this app uses.
+  Referenced by HealthConnectManager via PermissionController and surfaced to
+  the system Health Connect permissions sheet.
+
+  Must stay in sync with the <uses-permission> entries in AndroidManifest.xml:
+  5x READ + 7x WRITE = 12 permissions for the 7 supported MVP data types.
+-->
+<resources>
+    <array name="health_permissions">
+
+        <!-- READ -->
+        <item>android.permission.health.READ_EXERCISE</item>
+        <item>android.permission.health.READ_STEPS</item>
+        <item>android.permission.health.READ_HEART_RATE</item>
+        <item>android.permission.health.READ_SLEEP</item>
+        <item>android.permission.health.READ_ACTIVE_CALORIES_BURNED</item>
+
+        <!-- WRITE -->
+        <item>android.permission.health.WRITE_EXERCISE</item>
+        <item>android.permission.health.WRITE_STEPS</item>
+        <item>android.permission.health.WRITE_HEART_RATE</item>
+        <item>android.permission.health.WRITE_SLEEP</item>
+        <item>android.permission.health.WRITE_ACTIVE_CALORIES_BURNED</item>
+        <item>android.permission.health.WRITE_RESTING_HEART_RATE</item>
+        <item>android.permission.health.WRITE_VO2_MAX</item>
+
+    </array>
+</resources>

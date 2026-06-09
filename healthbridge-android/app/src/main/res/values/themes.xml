@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+      Minimal launch / host theme.
+      All real styling is done in Compose (Material3) at runtime; this theme only
+      controls the window chrome before the first Compose frame is drawn.
+      NO action bar, dark window background to avoid a white flash on launch.
+    -->
+    <style name="Theme.HealthBridge" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/background_dark</item>
+        <item name="android:statusBarColor">@color/background_dark</item>
+        <item name="android:navigationBarColor">@color/background_dark</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+
+        <!-- Match Material3 accent to the app's TealAccent token. -->
+        <item name="colorPrimary">@color/teal_accent</item>
+    </style>
+
+</resources>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+      Launch-theme colors only. The full design palette lives in Compose
+      (com.healthbridge.ui.theme.Color.kt). These mirror the core tokens so the
+      window background matches the app before Compose draws its first frame.
+    -->
+
+    <!-- BackgroundDark = Color(0xFF0A0E1A) -->
+    <color name="background_dark">#FF0A0E1A</color>
+
+    <!-- SurfaceDark = Color(0xFF131929) -->
+    <color name="surface_dark">#FF131929</color>
+
+    <!-- TealAccent = Color(0xFF00D4B8) -->
+    <color name="teal_accent">#FF00D4B8</color>
+
+    <!-- TextPrimary = Color(0xFFE8EDF5) -->
+    <color name="text_primary">#FFE8EDF5</color>
+
+</resources>

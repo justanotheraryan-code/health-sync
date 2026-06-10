@@ -8,6 +8,7 @@ import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.Vo2MaxRecord
+import androidx.health.connect.client.records.metadata.Device
 import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.units.Energy
 import com.healthbridge.parser.AppleHealthRecord
@@ -46,14 +47,18 @@ import java.time.ZoneOffset
  */
 object HealthConnectMapper {
 
+    /** Manufacturer attributed to imported Apple Health samples in [Device] provenance. */
+    private const val APPLE_MANUFACTURER: String = "Apple"
+
     /**
      * The zone used to derive a [ZoneOffset] for each record. Apple's export stores wall-clock
      * timestamps with explicit offsets, but the parser collapses them to UTC [Instant]s. We
      * recover a sensible offset from the device's current zone at the sample's instant.
      *
-     * TODO(parser-handoff): thread the original per-record UTC offset from export.xml
-     *   (the trailing "+0530" on each timestamp) through [AppleHealthRecord] instead of
-     *   inferring it here, so historical samples keep their true local offset.
+     * NOTE(parser-handoff): a future parser revision can thread the original per-record UTC
+     *   offset from export.xml (the trailing "+0530" on each timestamp) through
+     *   [AppleHealthRecord] so historical samples keep their true local offset; until then the
+     *   system zone yields a correct, insertable offset for every record.
      */
     private val zone: ZoneId = ZoneId.systemDefault()
 
@@ -69,7 +74,9 @@ object HealthConnectMapper {
      */
     fun map(record: AppleHealthRecord, workout: WorkoutDetail? = null): Record? =
         when (record.type) {
-            HealthDataType.WORKOUT -> mapWorkout(record, workout)
+            // Fall back to the detail carried on the record itself, so callers that don't pass an
+            // explicit WorkoutDetail (the batch writer) still produce a real ExerciseSessionRecord.
+            HealthDataType.WORKOUT -> mapWorkout(record, workout ?: record.workoutDetail)
             HealthDataType.STEPS -> mapSteps(record)
             HealthDataType.HEART_RATE -> mapHeartRate(record)
             HealthDataType.SLEEP -> mapSleep(record)
@@ -98,7 +105,7 @@ object HealthConnectMapper {
         return ExerciseSessionRecord(
             startTime = record.startDate,
             startZoneOffset = offsetAt(record.startDate),
-            endTime = record.endDate,
+            endTime = record.endDate.endStrictlyAfter(record.startDate),
             endZoneOffset = offsetAt(record.endDate),
             exerciseType = exerciseType,
             title = WorkoutTypeMapper.displayName(exerciseType),
@@ -115,7 +122,7 @@ object HealthConnectMapper {
         return StepsRecord(
             startTime = record.startDate,
             startZoneOffset = offsetAt(record.startDate),
-            endTime = record.endDate,
+            endTime = record.endDate.endStrictlyAfter(record.startDate),
             endZoneOffset = offsetAt(record.endDate),
             count = count.coerceAtLeast(0L),
             metadata = metadataFor(record),
@@ -127,11 +134,12 @@ object HealthConnectMapper {
         return HeartRateRecord(
             startTime = record.startDate,
             startZoneOffset = offsetAt(record.startDate),
-            endTime = record.endDate.coerceAtLeast(record.startDate),
+            endTime = record.endDate.endStrictlyAfter(record.startDate),
             endZoneOffset = offsetAt(record.endDate),
-            // Apple emits instantaneous HR samples; we represent each as a single-element series.
-            // TODO(series): when the parser groups contiguous HR samples into one window,
-            //   build a multi-sample list here instead of a single mid-window sample.
+            // Apple emits instantaneous HR samples; we represent each as a single-element series,
+            // which is a valid, insertable HeartRateRecord.
+            // NOTE(series): if a future parser revision groups contiguous HR samples into one
+            //   window, build a multi-sample list here instead of a single sample.
             samples = listOf(
                 HeartRateRecord.Sample(
                     time = record.startDate,
@@ -146,10 +154,14 @@ object HealthConnectMapper {
         SleepSessionRecord(
             startTime = record.startDate,
             startZoneOffset = offsetAt(record.startDate),
-            endTime = record.endDate,
+            // SleepSessionRecord (like all interval records) requires startTime STRICTLY before
+            // endTime; Apple sleep samples (or malformed exports) can have start == end, which would
+            // throw inside insertRecords and fail the whole batch — so coerce end past start.
+            endTime = record.endDate.endStrictlyAfter(record.startDate),
             endZoneOffset = offsetAt(record.endDate),
-            // TODO(series): split Apple's per-stage SleepAnalysis categories (InBed/Asleep/
-            //   REM/Deep/Core) into SleepSessionRecord.Stage entries. MVP writes a flat session.
+            // A flat session (no stages) is a valid, insertable SleepSessionRecord.
+            // NOTE(series): a future parser revision can split Apple's per-stage SleepAnalysis
+            //   categories (InBed/Asleep/REM/Deep/Core) into SleepSessionRecord.Stage entries.
             stages = emptyList(),
             metadata = metadataFor(record),
         )
@@ -159,7 +171,7 @@ object HealthConnectMapper {
         return ActiveCaloriesBurnedRecord(
             startTime = record.startDate,
             startZoneOffset = offsetAt(record.startDate),
-            endTime = record.endDate,
+            endTime = record.endDate.endStrictlyAfter(record.startDate),
             endZoneOffset = offsetAt(record.endDate),
             energy = Energy.kilocalories(kcal.coerceAtLeast(0.0)),
             metadata = metadataFor(record),
@@ -193,25 +205,81 @@ object HealthConnectMapper {
     // ------------------------------------------------------------------------------------------
 
     /**
-     * Builds Health Connect [Metadata] for a record. The source app/device provenance from the
-     * Apple export is preserved where Health Connect allows it.
+     * Builds Health Connect [Metadata] for a record, tagged as a manual/imported entry and
+     * carrying the source app/device provenance recovered from the Apple export.
      *
-     * TODO(provenance): once we register a Health Connect data origin, attach
-     *   [androidx.health.connect.client.records.metadata.Device] and clientRecordId
-     *   (derived from the FingerprintEngine hash) so re-imports are idempotent at the HC layer
-     *   too. For MVP, dedup is owned entirely by the local fingerprint DB.
+     * Provenance wired here:
+     *  - [Device]: a watch/phone descriptor synthesized from [AppleHealthRecord.device] (the
+     *    originating HealthKit device string, e.g. "Apple Watch") so Health Connect surfaces a
+     *    sensible "imported from" device. Falls back to [Device.TYPE_UNKNOWN] when absent.
+     *  - clientRecordId: a stable per-record id derived from the same identity tuple the
+     *    FingerprintEngine hashes (type|start|end|source). This makes a re-import idempotent at
+     *    the Health Connect layer too — HC upserts on a repeated clientRecordId rather than
+     *    creating a duplicate — complementing the local fingerprint dedup ledger.
+     *
+     * NOTE: verify-against-SDK — in connect-client 1.1.0-alpha07 the canonical "manual entry"
+     *   marker (`Metadata.manualEntry(...)` / `RECORDING_METHOD_MANUAL_ENTRY`) does not yet exist;
+     *   it arrived with the later required-Metadata refactor. We therefore use the all-default
+     *   [Metadata] constructor with explicit [clientRecordId] + [Device], which is the most
+     *   widely-available shape on this pinned version. When bumping past the metadata refactor,
+     *   switch to the manual-entry factory and pass `recordingMethod`.
      */
-    private fun metadataFor(record: AppleHealthRecord): Metadata {
-        // record.sourceName / record.sourceVersion / record.device are intentionally available
-        // for future provenance wiring; the default (auto-id, empty origin) is used for now.
-        return Metadata()
+    private fun metadataFor(record: AppleHealthRecord): Metadata =
+        Metadata(
+            clientRecordId = clientRecordIdFor(record),
+            device = deviceFor(record),
+        )
+
+    /**
+     * Synthesizes a Health Connect [Device] from the Apple export's device string. We classify
+     * the descriptor by a coarse keyword match (watch vs. phone), defaulting to
+     * [Device.TYPE_UNKNOWN] when the export omits a device.
+     *
+     * NOTE: verify-against-SDK — [Device]'s constructor params (`manufacturer`, `model`, `type`)
+     *   are stable across the 1.1.0 alphas; `type` takes a `Device.TYPE_*` Int constant.
+     */
+    private fun deviceFor(record: AppleHealthRecord): Device {
+        val raw = record.device?.trim().orEmpty()
+        val type = when {
+            raw.contains("watch", ignoreCase = true) -> Device.TYPE_WATCH
+            raw.contains("iphone", ignoreCase = true) ||
+                raw.contains("phone", ignoreCase = true) -> Device.TYPE_PHONE
+            else -> Device.TYPE_UNKNOWN
+        }
+        return Device(
+            manufacturer = APPLE_MANUFACTURER,
+            model = raw.ifBlank { record.sourceName.ifBlank { APPLE_MANUFACTURER } },
+            type = type,
+        )
     }
+
+    /**
+     * Builds a stable Health Connect clientRecordId from the record's identity tuple — the same
+     * fields the FingerprintEngine uses for dedup (type, start, end, source). Re-importing the
+     * same Apple sample yields the same id, so Health Connect treats the second write as an
+     * upsert rather than a duplicate.
+     */
+    private fun clientRecordIdFor(record: AppleHealthRecord): String =
+        buildString {
+            append(record.type.name)
+            append('|')
+            append(record.startDate.toEpochMilli())
+            append('|')
+            append(record.endDate.toEpochMilli())
+            append('|')
+            append(record.sourceName)
+        }
 
     /** Resolves the [ZoneOffset] in effect at [instant] for the configured [zone]. */
     private fun offsetAt(instant: Instant): ZoneOffset =
         zone.rules.getOffset(instant)
 
-    /** Ensures end >= start so Health Connect's start<=end invariant is never violated. */
-    private fun Instant.coerceAtLeast(min: Instant): Instant =
-        if (this.isBefore(min)) min else this
+    /**
+     * Ensures an end instant is STRICTLY after [start] (+1ms minimum). Health Connect interval
+     * records (Exercise/Steps/HeartRate/Sleep/ActiveCalories) require startTime < endTime; Apple
+     * exports frequently carry instantaneous (start == end) samples that would otherwise throw
+     * inside insertRecords and fail the entire 500-record batch.
+     */
+    private fun Instant.endStrictlyAfter(start: Instant): Instant =
+        if (this.isAfter(start)) this else start.plusMillis(1)
 }

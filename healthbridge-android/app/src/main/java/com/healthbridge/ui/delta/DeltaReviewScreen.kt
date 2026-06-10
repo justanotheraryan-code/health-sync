@@ -27,6 +27,7 @@ import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,6 +54,7 @@ import com.healthbridge.ui.components.HbPrimaryButton
 import com.healthbridge.ui.components.HbScaffold
 import com.healthbridge.ui.components.HbSectionLabel
 import com.healthbridge.ui.components.HbTextButton
+import com.healthbridge.ui.sync.SyncViewModel
 import com.healthbridge.ui.theme.BackgroundDark
 import com.healthbridge.ui.theme.DividerColor
 import com.healthbridge.ui.theme.SurfaceElevated
@@ -86,14 +88,38 @@ import com.healthbridge.ui.theme.TextTertiary
 fun DeltaReviewScreen(
     onBack: () -> Unit,
     onWrite: () -> Unit,
-    // TODO: load the real delta for this file (SyncEngine keyed by fileUri).
     fileUri: String = "",
-    // TODO: replace [sampleDeltaResult] with the real DeltaResult produced by the
-    //       fingerprint diff (FingerprintEngine -> SyncEngine.computeDelta()).
+    // Sample default keeps @Preview working; overridden by the real VM delta when [vm] != null.
     delta: DeltaResult = sampleDeltaResult,
-    // TODO: replace with the real per-type expanded item samples once the parser
-    //       surfaces individual AppleHealthRecord / WorkoutDetail rows for preview.
+    // Per-type expanded item samples for preview. Real per-record hydration is OPTIONAL for the MVP
+    // (buildItemsForType returns empty -> "Item preview unavailable.").
     itemsByType: Map<HealthDataType, List<DeltaItem>> = sampleItemsByType,
+    // When non-null, the real engine delta (computed during Processing) is read from the shared VM.
+    vm: SyncViewModel? = null,
+) {
+    // Prefer the VM's computed delta when present; while it's still null (e.g. process death landed
+    // straight on Delta), fall back to the provided/sample delta so the screen always renders.
+    val vmDelta = vm?.delta?.collectAsState()?.value
+    val effectiveDelta = vmDelta ?: delta
+
+    DeltaReviewContent(
+        onBack = onBack,
+        onWrite = onWrite,
+        delta = effectiveDelta,
+        itemsByType = itemsByType,
+    )
+}
+
+/**
+ * Stateless content of the delta-review screen, rendered purely from [delta]. Split out so the
+ * vm-driven and preview paths share one body.
+ */
+@Composable
+private fun DeltaReviewContent(
+    onBack: () -> Unit,
+    onWrite: () -> Unit,
+    delta: DeltaResult,
+    itemsByType: Map<HealthDataType, List<DeltaItem>>,
 ) {
     val isEmpty = delta.newTotal <= 0
 

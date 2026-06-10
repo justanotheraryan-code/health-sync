@@ -26,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,6 +48,8 @@ import com.healthbridge.ui.components.HbGhostButton
 import com.healthbridge.ui.components.HbPrimaryButton
 import com.healthbridge.ui.components.HbScaffold
 import com.healthbridge.ui.components.HbSectionLabel
+import com.healthbridge.sync.SyncProgress
+import com.healthbridge.ui.sync.SyncViewModel
 import com.healthbridge.ui.theme.BackgroundDark
 import com.healthbridge.ui.theme.DividerColor
 import com.healthbridge.ui.theme.ErrorRed
@@ -80,27 +83,90 @@ import kotlinx.coroutines.delay
 @Composable
 fun WritingScreen(
     onDone: () -> Unit,
-    // TODO: write the records for this file via HealthConnectWriter; currently sample-animated.
     fileUri: String = "",
     // Optional secondary action on the success state → Sync History.
     onViewHistory: () -> Unit = {},
+    // When non-null, the screen renders the real write stream from the shared [SyncViewModel]; when
+    // null (e.g. @Preview), the scripted sample ticker runs instead.
+    vm: SyncViewModel? = null,
 ) {
-    // -----------------------------------------------------------------------
-    // Hoisted UI state. A WritingViewModel will own this and collect the
-    // HealthConnectWriter progress callbacks into it.
-    // -----------------------------------------------------------------------
+    if (vm != null) {
+        WritingFromEngine(vm = vm, onDone = onDone)
+    } else {
+        WritingSampleAnimated(onDone = onDone)
+    }
+}
+
+/**
+ * Real-engine driver: maps the shared VM's [SyncProgress] onto [WriteUiState]. The actual write was
+ * started by the Delta screen's `vm.confirmWrite()`; if the user landed here directly (process
+ * death) with no progress in flight, we kick [SyncViewModel.confirmWrite] so the phase still runs.
+ */
+@Composable
+private fun WritingFromEngine(vm: SyncViewModel, onDone: () -> Unit) {
+    val progress by vm.progress.collectAsState()
+
+    LaunchedEffect(Unit) {
+        // Resume the write if we arrived without an in-flight/finished write (e.g. process death).
+        val p = vm.progress.value
+        if (p == null || p is SyncProgress.DeltaReady) {
+            vm.confirmWrite()
+        }
+    }
+
+    val total = vm.newRecordCount
+    val state: WriteUiState = when (val p = progress) {
+        is SyncProgress.Writing -> WriteUiState.startWriting(totalRecords = p.total)
+            .onProgress(
+                written = p.written,
+                currentBatch = ceilDiv(p.written, WriteUiState.BATCH_SIZE).coerceAtLeast(1),
+                totalBatches = ceilDiv(p.total, WriteUiState.BATCH_SIZE),
+            )
+
+        is SyncProgress.Done -> {
+            val written = p.session.recordsWritten.values.sum()
+            when (p.session.status) {
+                "FAILED", "PARTIAL" -> {
+                    // Some records didn't land — surface the partial-failure state. The failed count
+                    // is the analyzed total minus what was confirmed written.
+                    val failed = (total - written).coerceAtLeast(0)
+                    WriteUiState.startWriting(totalRecords = total.coerceAtLeast(written))
+                        .toError(
+                            written = written,
+                            failed = failed,
+                            failedBatches = ceilDiv(failed, WriteUiState.BATCH_SIZE).coerceAtLeast(1),
+                        )
+                }
+                else -> WriteUiState.startWriting(totalRecords = written.coerceAtLeast(0))
+                    .toSuccess(written = written)
+            }
+        }
+
+        is SyncProgress.Failed -> {
+            // Whole write failed before any confirmed batch.
+            WriteUiState.startWriting(totalRecords = total.coerceAtLeast(1))
+                .toError(written = 0, failed = total, failedBatches = ceilDiv(total, WriteUiState.BATCH_SIZE).coerceAtLeast(1))
+        }
+
+        // null / DeltaReady / pre-write states: show the "writing" shell while confirmWrite spins up.
+        else -> WriteUiState.startWriting(totalRecords = total.coerceAtLeast(0))
+    }
+
+    RenderWritePhase(
+        state = state,
+        onRetry = { vm.retry() },
+        onDone = onDone,
+    )
+}
+
+/**
+ * Scripted sample driver for previews (and any vm-less caller). Simulates batches landing one tick at
+ * a time, then settles into success (flip [SIMULATE_FAILURE] to exercise the error branch).
+ */
+@Composable
+private fun WritingSampleAnimated(onDone: () -> Unit) {
     var state by remember { mutableStateOf(WriteUiState.startWriting(totalRecords = 1284)) }
 
-    // TODO: replace this sample ticker with the real write stream:
-    //
-    //   val writer = HealthConnectWriter(client, mapper, fingerprintEngine)
-    //   val result = writer.write(newRecords) { written, total ->
-    //       state = state.onProgress(written = written, total = total)
-    //   }
-    //   state = if (writer.hasFailures()) state.toError(...) else state.toSuccess()
-    //
-    // The block below simulates ~24 batches landing one tick at a time, then drops
-    // into the success phase (flip SIMULATE_FAILURE to exercise the error branch).
     LaunchedEffect(Unit) {
         val batchSize = WriteUiState.BATCH_SIZE
         val total = state.totalRecords
@@ -123,6 +189,20 @@ fun WritingScreen(
         }
     }
 
+    RenderWritePhase(
+        state = state,
+        onRetry = { state = WriteUiState.startWriting(totalRecords = state.failed) },
+        onDone = onDone,
+    )
+}
+
+/** Renders the correct phase composable for [state]. Shared by the engine and sample drivers. */
+@Composable
+private fun RenderWritePhase(
+    state: WriteUiState,
+    onRetry: () -> Unit,
+    onDone: () -> Unit,
+) {
     when (state.phase) {
         WritePhase.Writing -> WritingInProgress(state = state)
         WritePhase.Success -> WritingSuccess(written = state.written, onDone = onDone)
@@ -130,11 +210,7 @@ fun WritingScreen(
             written = state.written,
             failed = state.failed,
             failedBatches = state.failedBatches,
-            onRetry = {
-                // TODO: writer.retryFailed { written, total -> state = state.onProgress(...) }
-                //  then resolve to Success/Error from the returned WriteResult.
-                state = WriteUiState.startWriting(totalRecords = state.failed)
-            },
+            onRetry = onRetry,
             onDone = onDone,
         )
     }

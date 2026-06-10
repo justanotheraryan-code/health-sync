@@ -2,11 +2,13 @@ package com.healthbridge.parser
 
 import android.util.Xml
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flow
 import org.xmlpull.v1.XmlPullParser
 import org.xmlpull.v1.XmlPullParserException
+import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.time.Instant
@@ -96,6 +98,105 @@ class AppleHealthParser {
             // Final progress tick so the UI settles on the exact scanned total.
             onProgress(scanned, lastType)
         }
+    }
+
+    /**
+     * Streaming parse of an extracted `export.xml` [File] into an in-memory [List] of supported,
+     * enabled [AppleHealthRecord]s. This is the primary entry point used by [com.healthbridge.sync.SyncEngine]:
+     * it owns the file lifecycle (opens, fully reads, and closes the stream), so the engine only
+     * needs to delete the extracted XML afterwards.
+     *
+     * Memory safety: this still parses node-by-node via [XmlPullParser] — at no point is a DOM built.
+     * The returned [List] is intentionally materialised (the delta/fingerprint stage needs the full
+     * set in one pass); for the MVP's bounded export sizes this is an accepted tradeoff and the
+     * per-node transient footprint remains O(1).
+     *
+     * @param xml the extracted `export.xml` on local cache. Opened with a buffered stream; closed via
+     *   `use {}` even on failure.
+     * @param enabled only records whose [HealthDataType] is in this set are retained; unsupported or
+     *   disabled nodes are skipped cheaply without allocating an [AppleHealthRecord].
+     * @param onProgress a *suspending* callback invoked roughly every [PROGRESS_INTERVAL] scanned
+     *   nodes (and once at the end) with the running scanned count and the most-recently-seen type.
+     *   Because it is suspending, callers (e.g. SyncEngine) can `emit(...)` a [com.healthbridge.sync.SyncProgress]
+     *   directly from inside it without bridging.
+     * @return all retained records in document order.
+     * @throws AppleHealthParseException if the XML is structurally corrupt or truncated.
+     */
+    suspend fun parse(
+        xml: File,
+        enabled: Set<HealthDataType>,
+        onProgress: suspend (scanned: Int, currentType: HealthDataType?) -> Unit,
+    ): List<AppleHealthRecord> {
+        val out = ArrayList<AppleHealthRecord>()
+
+        // `use {}` guarantees the stream is closed even if parsing throws — this entry point owns the
+        // file's read lifecycle (unlike the InputStream overload, where the caller owns it).
+        xml.inputStream().buffered().use { input ->
+            val parser: XmlPullParser = Xml.newPullParser().apply {
+                setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
+                setInput(input, /* inputEncoding = */ null) // null -> detect from XML prolog
+            }
+
+            var scanned = 0
+            var lastType: HealthDataType? = null
+
+            try {
+                var event = parser.eventType
+                while (event != XmlPullParser.END_DOCUMENT) {
+                    if (event == XmlPullParser.START_TAG) {
+                        when (parser.name) {
+                            TAG_RECORD -> {
+                                scanned++
+                                readRecord(parser, enabled)?.let {
+                                    lastType = it.type
+                                    out += it
+                                }
+                                if (scanned % PROGRESS_INTERVAL == 0) {
+                                    // Cooperative cancellation: a multi-GB import must abort promptly
+                                    // if the collecting scope (viewModelScope) is cancelled.
+                                    // `coroutineContext` is the kotlin.coroutines stdlib property
+                                    // available in any suspend fun; ensureActive() is kotlinx's
+                                    // CoroutineContext extension.
+                                    kotlin.coroutines.coroutineContext.ensureActive()
+                                    onProgress(scanned, lastType)
+                                }
+                            }
+
+                            TAG_WORKOUT -> {
+                                scanned++
+                                readWorkout(parser, enabled)?.let {
+                                    lastType = HealthDataType.WORKOUT
+                                    out += it
+                                }
+                                if (scanned % PROGRESS_INTERVAL == 0) {
+                                    kotlin.coroutines.coroutineContext.ensureActive()
+                                    onProgress(scanned, lastType)
+                                }
+                            }
+                            // Top-level <ExportDate>, <Me>, <ClinicalRecord>, <Correlation>,
+                            // <ActivitySummary> are intentionally ignored — fall through and advance.
+                        }
+                    }
+                    event = parser.next()
+                }
+            } catch (e: XmlPullParserException) {
+                throw AppleHealthParseException(
+                    "Malformed Apple Health export at line ${parser.lineNumber}", e
+                )
+            } catch (e: IOException) {
+                throw AppleHealthParseException("I/O failure while streaming export.xml", e)
+            } finally {
+                // Final tick so the UI settles on the exact scanned total (best-effort; never let a
+                // progress emission mask the original parse failure).
+                try {
+                    onProgress(scanned, lastType)
+                } catch (_: Throwable) {
+                    // ignore — terminal progress is non-essential and must not shadow a real error.
+                }
+            }
+        }
+
+        return out
     }
 
     /**
@@ -263,13 +364,10 @@ class AppleHealthParser {
             routePoints = routePoints, // empty in MVP; hasRoute signals deferred ingestion
         )
 
-        // The shared AppleHealthRecord shape (per the scaffold contract) does not carry a structured
-        // WorkoutDetail field; we encode the workout's energy in `value`/`unit` and stash the raw
-        // activity string in `sourceVersion`-adjacent fields is NOT done — instead we surface the
-        // activity type via `unit` is wrong too. Per contract, value/unit map cleanly: energy->value,
-        // "kcal"->unit. The activity type is recovered downstream from the record `type` + mapper.
-        // TODO(integration): if richer workout fidelity is required, extend AppleHealthRecord with an
-        //  optional `workoutDetail: WorkoutDetail?` field (coordinate with the model-owning agent).
+        // `detail` (concrete activity subtype + energy) is attached to the returned record via
+        // `workoutDetail` so HealthConnectMapper can build a proper ExerciseSessionRecord and the
+        // FingerprintEngine can fold the subtype into the dedup hash. Energy is ALSO surfaced on
+        // value/unit for the generic display path. hasRoute is recorded for the deferred v1.1 work.
         @Suppress("UNUSED_VARIABLE")
         val deferredRouteFlag = hasRoute
 
@@ -282,6 +380,7 @@ class AppleHealthParser {
             value = detail.totalEnergyKcal,
             unit = detail.totalEnergyKcal?.let { UNIT_KCAL },
             device = device,
+            workoutDetail = detail,
         )
     }
 

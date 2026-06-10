@@ -1,5 +1,7 @@
 package com.healthbridge.ui.importer
 
+import android.content.Intent
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -23,6 +25,7 @@ import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,11 +34,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.util.zip.ZipInputStream
 import com.healthbridge.ui.components.HbCard
 import com.healthbridge.ui.components.HbChip
 import com.healthbridge.ui.components.HbChipKind
@@ -76,7 +83,11 @@ fun ImportScreen(
     onBack: () -> Unit,
     onFileSelected: (fileUri: String) -> Unit,
 ) {
+    val context = LocalContext.current
     var picked by remember { mutableStateOf<PickedFile?>(null) }
+    // The raw picked Uri, set synchronously in the launcher callback; the heavy inspection
+    // (metadata + ZIP peek) runs off-main in a LaunchedEffect keyed on this value.
+    var pendingUri by remember { mutableStateOf<android.net.Uri?>(null) }
 
     // SAF document picker. We restrict to ZIP via mime type, but Apple's export is
     // sometimes reported as octet-stream by the OS, so the real archive sniffing
@@ -85,12 +96,23 @@ fun ImportScreen(
         contract = ActivityResultContracts.OpenDocument,
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        // TODO: take a persistable URI permission so we can re-open across process death:
-        //   context.contentResolver.takePersistableUriPermission(uri, FLAG_GRANT_READ_URI_PERMISSION)
-        // TODO: read DocumentsContract metadata (DISPLAY_NAME, SIZE, LAST_MODIFIED) off the
-        //   main thread, then peek the ZIP central directory for an `export.xml` entry to
-        //   compute `isValidExport`. For now we mock a selection so the UI is exercisable.
-        picked = mockPickedFromUri(uri.toString())
+        // Take a persistable read permission so we can re-open the export across process death
+        // (the Processing screen resumes from the same Uri string).
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION,
+            )
+        }
+        pendingUri = uri
+    }
+
+    // Off-main inspection: query OpenableColumns (DISPLAY_NAME / SIZE) and peek the ZIP for an
+    // `export.xml` entry. Both touch the ContentResolver, so they must not run on the main thread.
+    LaunchedEffect(pendingUri) {
+        val uri = pendingUri ?: return@LaunchedEffect
+        val result = withContext(Dispatchers.IO) { inspectPickedZip(context, uri) }
+        picked = result
     }
 
     val launchPicker: () -> Unit = {
@@ -109,7 +131,8 @@ fun ImportScreen(
                 text = "Start processing",
                 onClick = {
                     val file = picked ?: return@HbPrimaryButton
-                    // TODO: hand the real selected URI to ProcessingScreen via SyncEngine.
+                    // Hand the real selected URI string to the Processing screen; the shared
+                    // SyncViewModel resumes parse+dedupe from it.
                     onFileSelected(file.uri)
                 },
                 enabled = canProcess,
@@ -376,22 +399,74 @@ private const val EXPORT_INSTRUCTIONS =
         "Export All Health Data. Transfer the resulting export.zip to this device."
 
 /**
- * Stand-in that fabricates a [PickedFile] from a picked URI so the UI is fully
- * exercisable without real document inspection.
+ * Inspects a picked archive [uri] OFF the main thread and builds a [PickedFile]:
+ *  1. queries [OpenableColumns.DISPLAY_NAME] / [OpenableColumns.SIZE] for the card header, and
+ *  2. streams the ZIP central directory looking for an `export.xml` entry (matched by leaf name so
+ *     `apple_health_export/export.xml` also counts) to set [PickedFile.isValidExport].
  *
- * TODO: replace with real metadata + ZIP central-directory inspection:
- *   - DISPLAY_NAME / SIZE / LAST_MODIFIED from DocumentsContract
- *   - scan entries for `export.xml` (or `apple_health_export/export.xml`)
+ * The ZIP peek reads only entry headers via [ZipInputStream] (it never inflates the multi-GB
+ * `export.xml` payload), so it is cheap even on large exports. Any I/O failure yields an INVALID
+ * result rather than throwing, so a bad pick degrades to the guidance copy.
+ *
+ * MUST be called from a background dispatcher — it touches the ContentResolver and reads bytes.
  */
-private fun mockPickedFromUri(uri: String): PickedFile {
-    val looksLikeExport = uri.contains("export", ignoreCase = true)
+private fun inspectPickedZip(context: android.content.Context, uri: android.net.Uri): PickedFile {
+    val resolver = context.contentResolver
+
+    // --- Metadata (name + size) -------------------------------------------------------------
+    var name = uri.lastPathSegment ?: "archive.zip"
+    var sizeBytes: Long = -1L
+    runCatching {
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)
+            ?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (nameIdx >= 0 && !cursor.isNull(nameIdx)) name = cursor.getString(nameIdx)
+                    val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) sizeBytes = cursor.getLong(sizeIdx)
+                }
+            }
+    }
+
+    // --- Validation: does the ZIP contain an export.xml entry? ------------------------------
+    val isValidExport = runCatching {
+        resolver.openInputStream(uri)?.use { stream ->
+            ZipInputStream(stream.buffered()).use { zip ->
+                var entry = zip.nextEntry
+                while (entry != null) {
+                    val leaf = entry.name.substringAfterLast('/')
+                    if (!entry.isDirectory && leaf.equals("export.xml", ignoreCase = true)) {
+                        return@runCatching true
+                    }
+                    zip.closeEntry()
+                    entry = zip.nextEntry
+                }
+            }
+        }
+        false
+    }.getOrDefault(false)
+
     return PickedFile(
-        uri = uri,
-        name = if (looksLikeExport) "export.zip" else "archive.zip",
-        sizeLabel = "248.6 MB",
-        modifiedLabel = "2026-06-09 21:14",
-        isValidExport = looksLikeExport,
+        uri = uri.toString(),
+        name = name,
+        sizeLabel = formatBytes(sizeBytes),
+        modifiedLabel = "—",
+        isValidExport = isValidExport,
     )
+}
+
+/** Human-readable byte size (e.g. 248.6 MB). Returns "Unknown size" when the size is unavailable. */
+private fun formatBytes(bytes: Long): String {
+    if (bytes < 0) return "Unknown size"
+    if (bytes < 1024) return "$bytes B"
+    val units = listOf("KB", "MB", "GB", "TB")
+    var value = bytes.toDouble() / 1024.0
+    var unitIndex = 0
+    while (value >= 1024.0 && unitIndex < units.lastIndex) {
+        value /= 1024.0
+        unitIndex++
+    }
+    return "%.1f %s".format(value, units[unitIndex])
 }
 
 // ===========================================================================

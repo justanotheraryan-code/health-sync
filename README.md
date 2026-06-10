@@ -34,7 +34,7 @@ No backend. No accounts. No internet permission. Everything runs on the device.
 | | What | Status |
 |---|---|---|
 | 🟢 **[`web-prototype/`](web-prototype/)** | A fully interactive, installable **PWA** of all 8 screens. Real flow, real dedup logic, runs in any browser. | **Done & testable now** |
-| 🧱 **[`healthbridge-android/`](healthbridge-android/)** | The native **Kotlin / Jetpack Compose** project — theme, navigation, Compose screens, parser, Room fingerprint DB, Health Connect, sync pipeline. | **Architecture scaffold** (UI + structure in place; engine internals marked `TODO`) |
+| 🧱 **[`healthbridge-android/`](healthbridge-android/)** | The native **Kotlin / Jetpack Compose** app — theme, navigation, Compose screens, a **streaming XML parser**, **Room** fingerprint DB, **Health Connect** mapping/writing, and the `SyncEngine` flow wired to a `ViewModel` + SAF file picker + permission flow. | **Implemented** (full pipeline; pending `./gradlew assembleDebug` verification in Android Studio) |
 
 The prototype is the **design + interaction source of truth**; the Android module is the real
 codebase, scaffolded to match it screen-for-screen.
@@ -117,8 +117,9 @@ after** Health Connect confirms the batch write.
 
 ## Building the Android app
 
-> The scaffold compiles into a real project structure; business-logic internals are marked
-> `// TODO`. To produce an installable **APK/AAB**:
+> The pipeline is fully implemented (parser → fingerprint dedup → Health Connect write, wired to a
+> `SyncViewModel` + SAF picker + permission flow). Only GPS `WorkoutRoute → ExerciseRoute` and true
+> unzip-percent remain as deferred `// TODO`s. To produce an installable **APK/AAB**:
 
 ```bash
 # Requires Android Studio (Hedgehog+) or the Android SDK + a JDK 17

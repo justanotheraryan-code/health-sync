@@ -97,7 +97,14 @@ data class AppleHealthRecord(
     val sourceVersion: String?,
     val value: Double?,
     val unit: String?,
-    val device: String?
+    val device: String?,
+    /**
+     * For [HealthDataType.WORKOUT] records only: the parsed workout detail (concrete activity
+     * subtype + energy). Carried on the record so the Health Connect mapper can build a proper
+     * [androidx.health.connect.client.records.ExerciseSessionRecord], and so the fingerprint can
+     * include the activity subtype (two distinct workouts in the same time window must not collide).
+     */
+    val workoutDetail: WorkoutDetail? = null
 )
 
 /**

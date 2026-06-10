@@ -1,11 +1,13 @@
 package com.healthbridge.ui.nav
 
 import androidx.compose.runtime.Composable
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.healthbridge.parser.HealthDataType
 import com.healthbridge.ui.delta.DeltaReviewScreen
 import com.healthbridge.ui.history.SyncHistoryScreen
 import com.healthbridge.ui.home.HomeScreen
@@ -13,17 +15,44 @@ import com.healthbridge.ui.importer.ImportScreen
 import com.healthbridge.ui.importer.ProcessingScreen
 import com.healthbridge.ui.onboarding.OnboardingScreen
 import com.healthbridge.ui.settings.SettingsScreen
+import com.healthbridge.ui.sync.SyncViewModel
 import com.healthbridge.ui.writing.WritingScreen
 
 /**
  * Root navigation host. Single [NavHost] wiring all 8 screens.
  *
- * Screens receive plain `onNavigate` / `onBack` lambdas rather than the [NavController]
- * directly, so each screen stays decoupled from the nav graph and is preview-friendly.
+ * Screens receive plain `onNavigate` / `onBack` lambdas rather than the [NavController] directly,
+ * so each screen stays decoupled from the nav graph and is preview-friendly.
+ *
+ * SHARED IMPORT VM: the Processing → Delta → Writing screens each get their own NavBackStackEntry,
+ * but they MUST observe the SAME [SyncViewModel] so the phase-1 NEW records computed during
+ * Processing survive into the Writing phase (nav only carries the fileUri String). We therefore
+ * hoist ONE [SyncViewModel] here via `viewModel()` — scoped to the NavHost's ViewModelStoreOwner
+ * (the Activity) — and pass that single instance down to all three screens. (Wiring option (A) from
+ * the contract: simplest, matches "the VM owns one SyncEngine".)
+ *
+ * @param healthConnectAvailable            whether the Health Connect SDK is usable on this device.
+ * @param healthConnectPermissionsGranted   whether all required HC permissions are granted.
+ * @param onRequestHealthConnectPermissions launches the HC permission sheet (owned by MainActivity).
+ * @param onRefreshHealthConnectPermissions re-reads live grant state after returning from HC settings.
  */
 @Composable
-fun HealthBridgeApp() {
+fun HealthBridgeApp(
+    healthConnectAvailable: Boolean = false,
+    healthConnectPermissionsGranted: Boolean = false,
+    onRequestHealthConnectPermissions: () -> Unit = {},
+    onRefreshHealthConnectPermissions: () -> Unit = {},
+) {
     val navController = rememberNavController()
+
+    // ONE VM for the entire import flow, shared across Processing/Delta/Writing. Activity-scoped
+    // (default `viewModel()` owner under the NavHost), so the cached phase-1 records persist between
+    // the three back-stack entries.
+    val syncViewModel: SyncViewModel = viewModel()
+
+    // The set of data types to import. For the MVP we sync every supported type; Settings toggles
+    // would narrow this in a later iteration.
+    val enabledTypes: Set<HealthDataType> = HealthDataType.entries.toSet()
 
     NavHost(
         navController = navController,
@@ -44,7 +73,13 @@ fun HealthBridgeApp() {
         // ── HOME ────────────────────────────────────────────────────────────
         composable(Screen.Home.route) {
             HomeScreen(
-                onImport = { navController.navigate(Screen.Import.route) },
+                onImport = {
+                    // Fresh import: clear any prior pipeline state before entering the flow.
+                    syncViewModel.reset()
+                    // Make sure HC permission state is current before the user reaches Writing.
+                    onRefreshHealthConnectPermissions()
+                    navController.navigate(Screen.Import.route)
+                },
                 onHistory = { navController.navigate(Screen.History.route) },
                 onSettings = { navController.navigate(Screen.Settings.route) },
             )
@@ -69,6 +104,8 @@ fun HealthBridgeApp() {
         ) { backStackEntry ->
             val fileUri = backStackEntry.requireFileUri(Screen.Processing.ARG_FILE_URI)
             ProcessingScreen(
+                vm = syncViewModel,
+                enabledTypes = enabledTypes,
                 fileUri = fileUri,
                 onBack = { navController.popBackStack() },
                 onComplete = {
@@ -89,9 +126,12 @@ fun HealthBridgeApp() {
         ) { backStackEntry ->
             val fileUri = backStackEntry.requireFileUri(Screen.Delta.ARG_FILE_URI)
             DeltaReviewScreen(
+                vm = syncViewModel,
                 fileUri = fileUri,
                 onBack = { navController.popBackStack() },
                 onWrite = {
+                    // Gate phase 2: start the write, then advance to the Writing screen.
+                    syncViewModel.confirmWrite()
                     navController.navigate(Screen.Writing.routeFor(fileUri))
                 },
             )
@@ -106,9 +146,11 @@ fun HealthBridgeApp() {
         ) { backStackEntry ->
             val fileUri = backStackEntry.requireFileUri(Screen.Writing.ARG_FILE_URI)
             WritingScreen(
+                vm = syncViewModel,
                 fileUri = fileUri,
                 onDone = {
                     // Sync complete → return to Home, clearing the import flow.
+                    syncViewModel.reset()
                     navController.navigate(Screen.Home.route) {
                         popUpTo(Screen.Home.route) { inclusive = true }
                     }

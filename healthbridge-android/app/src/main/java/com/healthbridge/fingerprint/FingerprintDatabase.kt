@@ -148,7 +148,9 @@ interface SyncLogDao {
 @Database(
     entities = [FingerprintEntity::class, SyncLogEntity::class],
     version = 1,
-    exportSchema = true
+    // No schema export location is configured (single version + destructive migration), so keep
+    // this false to avoid the KSP "Schema export directory is not provided" build warning.
+    exportSchema = false
 )
 abstract class FingerprintDatabase : RoomDatabase() {
 

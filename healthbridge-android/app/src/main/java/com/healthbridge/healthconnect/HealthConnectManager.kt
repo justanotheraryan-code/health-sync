@@ -58,6 +58,16 @@ class HealthConnectManager(private val context: Context) {
         get() = availability == HealthConnectClient.SDK_AVAILABLE
 
     /**
+     * Functional accessor for the current SDK status, mirroring the [availability] property.
+     *
+     * Exposed as a method for callers (e.g. onboarding gating) that prefer an explicit call;
+     * returns the same value as [availability]. One of [HealthConnectClient.SDK_AVAILABLE],
+     * [HealthConnectClient.SDK_UNAVAILABLE], or
+     * [HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED].
+     */
+    fun availability(): Int = availability
+
+    /**
      * True when the provider is present but must be updated before use. The UI should
      * deep-link the user to the Play Store / system update flow in this case.
      */
@@ -121,12 +131,15 @@ class HealthConnectManager(private val context: Context) {
     /**
      * The set of permissions currently granted to HealthBridge by the user.
      *
-     * @throws IllegalStateException-style errors if the SDK is unavailable; callers
-     *         should gate on [isAvailable] before invoking.
+     * Returns an empty set when Health Connect is unavailable (nothing can be granted on a
+     * device without the provider) so callers never have to catch the client's construction
+     * error; gate on [isAvailable] when you need to distinguish "unavailable" from "none
+     * granted".
      */
     suspend fun grantedPermissions(): Set<String> {
-        // TODO: surface a typed result/error if [isAvailable] is false rather than
-        //       letting the client throw on access.
+        if (!isAvailable) return emptySet()
+        // getGrantedPermissions() returns the granted permission strings in
+        // connect-client:1.1.0-alpha07 (the older Set<HealthPermission> overload was removed).
         return client.permissionController.getGrantedPermissions()
     }
 
@@ -150,6 +163,16 @@ class HealthConnectManager(private val context: Context) {
     fun permissionsLauncherContract(): ActivityResultContract<Set<String>, Set<String>> {
         return PermissionController.createRequestPermissionResultContract()
     }
+
+    /**
+     * Alias of [permissionsLauncherContract] for callers that prefer the shorter name.
+     *
+     * Returns the same Health Connect permission-request [ActivityResultContract], built via
+     * [PermissionController.createRequestPermissionResultContract]; launch it with
+     * [REQUIRED_PERMISSIONS].
+     */
+    fun requestPermissionsContract(): ActivityResultContract<Set<String>, Set<String>> =
+        permissionsLauncherContract()
 
     /**
      * Per-[HealthDataType] grant state, keyed by every supported MVP type.
@@ -177,8 +200,9 @@ class HealthConnectManager(private val context: Context) {
      */
     suspend fun revokeAllPermissions() {
         if (!isAvailable) return
-        // TODO: confirm this is the desired UX (full revoke) vs. deep-linking the user
-        //       to the Health Connect app's data-management screen.
+        // Full programmatic revoke of every permission granted to HealthBridge. (Settings may
+        // additionally deep-link to the Health Connect app for data management; that is a UI
+        // concern handled by the settings screen, not this manager.)
         client.permissionController.revokeAllPermissions()
     }
 }

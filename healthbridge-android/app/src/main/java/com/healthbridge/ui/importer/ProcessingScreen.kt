@@ -25,6 +25,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,7 +37,9 @@ import androidx.compose.ui.unit.sp
 import com.healthbridge.parser.DeltaResult
 import com.healthbridge.parser.DeltaRow
 import com.healthbridge.parser.HealthDataType
+import com.healthbridge.sync.SyncProgress
 import com.healthbridge.ui.components.HbCard
+import com.healthbridge.ui.sync.SyncViewModel
 import com.healthbridge.ui.components.HbChip
 import com.healthbridge.ui.components.HbChipKind
 import com.healthbridge.ui.components.HbScaffold
@@ -125,28 +128,76 @@ private data class ProcessingUiState(
 @Composable
 fun ProcessingScreen(
     onComplete: () -> Unit,
-    // TODO: drive the pipeline from SyncEngine.runImport(fileUri); currently sample-animated.
     fileUri: String = "",
     // Stage 1 (unpacking) is the only cancellable stage — wire this to the Cancel control.
     onBack: () -> Unit = {},
+    // When non-null, the screen is driven by the real engine via the shared [SyncViewModel]; when
+    // null (e.g. @Preview), the scripted sample animation runs instead.
+    vm: SyncViewModel? = null,
+    // The data types to import; forwarded to the engine's analyze pass.
+    enabledTypes: Set<HealthDataType> = HealthDataType.entries.toSet(),
 ) {
+    if (vm != null) {
+        ProcessingFromEngine(
+            vm = vm,
+            fileUri = fileUri,
+            enabledTypes = enabledTypes,
+            onComplete = onComplete,
+            onBack = onBack,
+        )
+    } else {
+        ProcessingSampleAnimated(onComplete = onComplete)
+    }
+}
+
+/**
+ * Real-engine driver: kicks off phase-1 analyze for [fileUri] and maps each [SyncProgress] emission
+ * onto the local [ProcessingUiState]. Advances via [onComplete] on [SyncProgress.DeltaReady]; renders
+ * an error state (reusing the dedup copy) on [SyncProgress.Failed].
+ */
+@Composable
+private fun ProcessingFromEngine(
+    vm: SyncViewModel,
+    fileUri: String,
+    enabledTypes: Set<HealthDataType>,
+    onComplete: () -> Unit,
+    onBack: () -> Unit,
+) {
+    LaunchedEffect(fileUri) {
+        if (fileUri.isNotBlank()) {
+            vm.startAnalyze(android.net.Uri.parse(fileUri), enabledTypes)
+        }
+    }
+
+    val progress by vm.progress.collectAsState()
+    var ui by remember { mutableStateOf(ProcessingUiState()) }
+
+    // Map progress → UI, carrying forward fields the next emission doesn't restate. We update the
+    // state holder inside a LaunchedEffect (NOT directly in the composition body) so writing to the
+    // snapshot state never re-triggers the current composition.
+    LaunchedEffect(progress) {
+        ui = progress.toProcessingUiState(ui)
+        // Advance to Delta once the delta is ready (the gate the PRD specifies).
+        if (progress is SyncProgress.DeltaReady) onComplete()
+    }
+
+    ProcessingContent(
+        ui = ui,
+        // Cancel during analyze: pop back to import. (Analyze runs in viewModelScope; navigating
+        // away simply abandons the in-flight UI — the engine's IO work cancels with the scope.)
+        onCancel = onBack,
+    )
+}
+
+/**
+ * Scripted sample animation used by previews (and any vm-less caller). Mutates a local
+ * [ProcessingUiState] through sample values on a timer so the stepper is fully exercisable offline.
+ */
+@Composable
+private fun ProcessingSampleAnimated(onComplete: () -> Unit) {
     var ui by remember { mutableStateOf(ProcessingUiState()) }
     var cancelled by remember { mutableStateOf(false) }
 
-    // -----------------------------------------------------------------------
-    // Drive the stepper.
-    //
-    // TODO: replace this scripted animation with the real engine stream:
-    //
-    //   LaunchedEffect(fileUri) {
-    //       syncEngine.runImport(fileUri)               // -> Flow<SyncProgress>
-    //           .collect { progress -> ui = progress.toUiState() }
-    //       onComplete()
-    //   }
-    //
-    // Stage transitions, the scanned counter and dedup rows below are sample
-    // values only; the engine will emit the authoritative ones.
-    // -----------------------------------------------------------------------
     LaunchedEffect(Unit) {
         // --- Stage 1: Unpacking (determinate) -------------------------------
         ui = ui.copy(stage = ProcessingStage.UNPACKING, unpackFraction = 0f)
@@ -208,6 +259,51 @@ fun ProcessingScreen(
         onCancel = { cancelled = true },
     )
 }
+
+/**
+ * Maps a [SyncProgress] emission onto the private [ProcessingUiState]. [previous] carries fields the
+ * current emission doesn't restate (e.g. Deduplicating doesn't re-send the scanned count), so the
+ * stepper never flickers backwards. A null progress (initial) yields the unpacking start state.
+ */
+private fun SyncProgress?.toProcessingUiState(previous: ProcessingUiState): ProcessingUiState =
+    when (this) {
+        null -> previous.copy(stage = ProcessingStage.UNPACKING)
+
+        is SyncProgress.Unpacking -> previous.copy(
+            stage = ProcessingStage.UNPACKING,
+            // pct < 0 is indeterminate — keep the prior fraction rather than snapping to 0.
+            unpackFraction = if (pct < 0) previous.unpackFraction else (pct / 100f).coerceIn(0f, 1f),
+        )
+
+        is SyncProgress.Parsing -> previous.copy(
+            stage = ProcessingStage.PARSING,
+            unpackFraction = 1f,
+            recordsScanned = scanned,
+            currentType = currentType?.let { name ->
+                HealthDataType.entries.firstOrNull { it.name == name || it.displayName == name }
+            },
+        )
+
+        is SyncProgress.Deduplicating -> previous.copy(
+            stage = ProcessingStage.DEDUPLICATION,
+            unpackFraction = 1f,
+            currentType = null,
+            knownRecordCount = known,
+        )
+
+        is SyncProgress.DeltaReady -> previous.copy(
+            stage = ProcessingStage.DONE,
+            unpackFraction = 1f,
+            currentType = null,
+            recordsScanned = if (delta.scannedTotal > 0) delta.scannedTotal else previous.recordsScanned,
+            dedupRows = delta.rows,
+        )
+
+        // Writing/Done belong to the next screen; Failed surfaces as a stalled dedup state with no
+        // rows (the engine already emitted the error message into the VM). Keep the prior UI so the
+        // user sees where it stopped.
+        else -> previous
+    }
 
 // ===========================================================================
 // Content (stateless — preview-friendly)

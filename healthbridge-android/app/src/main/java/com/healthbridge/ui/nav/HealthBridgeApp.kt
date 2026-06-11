@@ -1,12 +1,17 @@
 package com.healthbridge.ui.nav
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.healthbridge.data.SettingsRepository
 import com.healthbridge.parser.HealthDataType
 import com.healthbridge.ui.delta.DeltaReviewScreen
 import com.healthbridge.ui.history.SyncHistoryScreen
@@ -50,18 +55,33 @@ fun HealthBridgeApp(
     // the three back-stack entries.
     val syncViewModel: SyncViewModel = viewModel()
 
-    // The set of data types to import. For the MVP we sync every supported type; Settings toggles
-    // would narrow this in a later iteration.
-    val enabledTypes: Set<HealthDataType> = HealthDataType.entries.toSet()
+    // Persisted settings (process-singleton, SharedPreferences-backed). Used for the onboarding gate
+    // and the live set of enabled data types.
+    val context = LocalContext.current
+    val settings = remember(context) { SettingsRepository.getInstance(context) }
+
+    // Read the onboarding gate ONCE so the start destination is stable across recompositions (a
+    // changing startDestination would otherwise reset the NavHost).
+    val startDestination = remember {
+        if (settings.isOnboarded()) Screen.Home.route else Screen.Onboarding.route
+    }
+
+    // The set of data types to import, driven by the user's Settings toggles. Collected live so a
+    // toggle change is reflected the next time the import flow reads it.
+    val enabledTypes: Set<HealthDataType> by settings.enabledTypes.collectAsState()
 
     NavHost(
         navController = navController,
-        startDestination = Screen.Onboarding.route,
+        startDestination = startDestination,
     ) {
         // ── ONBOARDING ──────────────────────────────────────────────────────
         composable(Screen.Onboarding.route) {
             OnboardingScreen(
+                healthConnectGranted = healthConnectPermissionsGranted,
+                onRequestPermissions = onRequestHealthConnectPermissions,
                 onFinish = {
+                    // Persist the onboarded flag BEFORE navigating so a future cold start lands on Home.
+                    settings.setOnboarded(true)
                     navController.navigate(Screen.Home.route) {
                         // Onboarding is one-shot: don't return to it on back.
                         popUpTo(Screen.Onboarding.route) { inclusive = true }
@@ -73,6 +93,7 @@ fun HealthBridgeApp(
         // ── HOME ────────────────────────────────────────────────────────────
         composable(Screen.Home.route) {
             HomeScreen(
+                vm = viewModel(),
                 onImport = {
                     // Fresh import: clear any prior pipeline state before entering the flow.
                     syncViewModel.reset()
@@ -166,6 +187,7 @@ fun HealthBridgeApp(
         // ── HISTORY ─────────────────────────────────────────────────────────
         composable(Screen.History.route) {
             SyncHistoryScreen(
+                vm = viewModel(),
                 onBack = { navController.popBackStack() },
             )
         }
@@ -173,6 +195,8 @@ fun HealthBridgeApp(
         // ── SETTINGS ────────────────────────────────────────────────────────
         composable(Screen.Settings.route) {
             SettingsScreen(
+                vm = viewModel(),
+                onRequestPermissions = onRequestHealthConnectPermissions,
                 onBack = { navController.popBackStack() },
             )
         }

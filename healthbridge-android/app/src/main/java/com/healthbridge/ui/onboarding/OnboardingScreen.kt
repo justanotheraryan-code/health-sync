@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.PhoneIphone
 import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Icon
@@ -59,13 +60,23 @@ import kotlinx.coroutines.launch
  *  3. Grant Health Connect access — shows the 7 supported data-type pills and a button
  *     that launches the permission flow then calls [onFinish].
  *
- * The primary button reads "Next" on slides 1-2 and "Grant access & continue" on the
- * final slide. Dot indicators + the CTA live in the scaffold footer.
+ * The primary button reads "Next" on slides 1-2 and either "Grant access & continue" or,
+ * once permissions are granted, "Continue" on the final slide. Dot indicators + the CTA
+ * live in the scaffold footer.
  *
  * @param onFinish invoked once the user has completed the final slide (after permissions).
+ * @param healthConnectGranted whether the Health Connect write permissions are already
+ *   granted; reflected in slide 3's pills + the final CTA label.
+ * @param onRequestPermissions launches the real Health Connect permission sheet; wired into
+ *   the slide-3 grant button. Invoked before [onFinish] so the user sees the system prompt,
+ *   while still finishing optimistically so the nav graph stays traversable.
  */
 @Composable
-fun OnboardingScreen(onFinish: () -> Unit) {
+fun OnboardingScreen(
+    onFinish: () -> Unit,
+    healthConnectGranted: Boolean = false,
+    onRequestPermissions: () -> Unit = {},
+) {
     val slideCount = 3
     val pagerState = rememberPagerState(pageCount = { slideCount })
     val scope = rememberCoroutineScope()
@@ -81,13 +92,19 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                     .fillMaxWidth()
                     .padding(bottom = Dimens.s4),
             )
+            val lastSlideLabel =
+                if (healthConnectGranted) "Continue" else "Grant access & continue"
             HbPrimaryButton(
-                text = if (isLastSlide) "Grant access & continue" else "Next",
+                text = if (isLastSlide) lastSlideLabel else "Next",
                 onClick = {
                     if (isLastSlide) {
-                        // TODO: launch the Health Connect permission request flow, then
-                        //  call onFinish() from the permission result callback. For now we
-                        //  optimistically finish so the nav graph remains traversable.
+                        // Launch the real Health Connect permission sheet. If it is already
+                        // granted, this is effectively a no-op on the system side. We finish
+                        // optimistically afterwards so the nav graph remains traversable
+                        // regardless of the (async) permission result.
+                        if (!healthConnectGranted) {
+                            onRequestPermissions()
+                        }
                         onFinish()
                     } else {
                         scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
@@ -117,7 +134,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
             when (page) {
                 0 -> SlideIntro()
                 1 -> SlideExportSteps()
-                else -> SlideGrantAccess()
+                else -> SlideGrantAccess(healthConnectGranted = healthConnectGranted)
             }
         }
     }
@@ -304,7 +321,7 @@ private fun NumberedStep(number: Int, step: ExportStep) {
 /* ---------------------------------------------------------------------------------------------- */
 
 @Composable
-private fun SlideGrantAccess() {
+private fun SlideGrantAccess(healthConnectGranted: Boolean = false) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -328,6 +345,28 @@ private fun SlideGrantAccess() {
 
         HbSectionLabel(text = "Supported data types")
         DataTypePills()
+
+        if (healthConnectGranted) {
+            Spacer(Modifier.height(Dimens.s2))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Dimens.s2),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.CheckCircle,
+                    contentDescription = null,
+                    tint = TealAccent,
+                    modifier = Modifier.size(20.dp),
+                )
+                Text(
+                    text = "Permissions granted — you're all set.",
+                    color = TealAccent,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+        }
     }
 }
 
@@ -388,4 +427,14 @@ private fun DotIndicator(
 @Composable
 private fun OnboardingScreenPreview() {
     OnboardingScreen(onFinish = {})
+}
+
+@Preview(showBackground = true, backgroundColor = 0xFF0A0E1A)
+@Composable
+private fun OnboardingScreenGrantedPreview() {
+    OnboardingScreen(
+        onFinish = {},
+        healthConnectGranted = true,
+        onRequestPermissions = {},
+    )
 }

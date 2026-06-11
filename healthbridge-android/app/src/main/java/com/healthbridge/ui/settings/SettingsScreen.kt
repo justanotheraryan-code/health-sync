@@ -17,8 +17,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -28,8 +29,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.healthbridge.parser.HealthDataType
 import com.healthbridge.ui.components.HbCard
 import com.healthbridge.ui.components.HbChip
@@ -61,68 +65,65 @@ import com.healthbridge.ui.theme.TextTertiary
  *     confirmation dialog (does NOT touch Health Connect data).
  *  4. About — version, the on-device privacy posture, and an open-source note.
  *
- * State (per-type permission grants, per-type sync toggles, DB stats) is hoisted
- * into [SettingsUiState] with sample values for scaffolding. A SettingsViewModel
- * will later supply real values from [com.healthbridge.healthconnect.HealthConnectManager]
- * (permissions) and the Room fingerprint DB (counts/size), and persist toggle changes.
+ * State (per-type permission grants, per-type sync toggles, DB stats) lives in the VM's
+ * [SettingsUiState] (declared in SettingsViewModel.kt). When a [SettingsViewModel] is supplied
+ * the screen renders real values from [com.healthbridge.healthconnect.HealthConnectManager]
+ * (permissions) and the Room fingerprint DB (counts/size), and persists toggle changes through
+ * [com.healthbridge.data.SettingsRepository]. When `vm == null` (previews) a static sample is used.
  */
 
 // ===========================================================================
-// UI State
+// Sample / preview state
 // ===========================================================================
 
 /**
- * Immutable view state for [SettingsScreen].
- *
- * @param permissionGranted per-[HealthDataType] Health Connect write-permission grant state.
- *                          Mirrors HealthConnectManager.permissionStatusByType().
- * @param typeEnabled       per-[HealthDataType] "sync this type" toggle (default all true).
- * @param fingerprintCount  number of fingerprint rows currently stored locally.
- * @param storageBytes      approximate on-disk size of the fingerprint/sync DB, in bytes.
- * @param appVersion        the user-facing version string.
+ * Static sample [SettingsUiState] for `@Preview` + the `vm == null` scaffolding path. The
+ * authoritative [SettingsUiState] data class is declared in SettingsViewModel.kt; this is just a
+ * populated instance (VO2 Max ungranted, everything enabled) so the screen renders without a VM.
  */
-data class SettingsUiState(
-    val permissionGranted: Map<HealthDataType, Boolean>,
-    val typeEnabled: Map<HealthDataType, Boolean>,
-    val fingerprintCount: Int,
-    val storageBytes: Long,
-    val appVersion: String = "1.0.0",
-) {
-    companion object {
-        /** Sample populated state for previews and scaffolding. */
-        val Sample = SettingsUiState(
-            permissionGranted = HealthDataType.entries.associateWith { type ->
-                // Sample: VO2 max not yet granted, everything else granted.
-                type != HealthDataType.VO2_MAX
-            },
-            typeEnabled = HealthDataType.entries.associateWith { true },
-            fingerprintCount = 18_472,
-            storageBytes = 2_310_000L,
-        )
-    }
-}
+private val SampleSettings = SettingsUiState(
+    enabledByType = HealthDataType.entries.associateWith { true },
+    permissionByType = HealthDataType.entries.associateWith { type ->
+        type != HealthDataType.VO2_MAX
+    },
+    fingerprintCount = 18_472,
+    storageLabel = "1.1 MB",
+)
+
+/** User-facing app version. Not part of the VM state; rendered as a constant in [AboutCard]. */
+private const val APP_VERSION = "1.0.0"
 
 // ===========================================================================
 // Screen
 // ===========================================================================
 
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
-    // TODO: replace with SettingsViewModel state collected via collectAsStateWithLifecycle().
-    //  permissionGranted <- HealthConnectManager.permissionStatusByType()
-    //  fingerprintCount  <- FingerprintDao.count()
-    //  storageBytes      <- SyncLogDao.totalSize() / db file length
-    val state = SettingsUiState.Sample
-
-    // --- Hoisted, locally-mutable toggle state -----------------------------
-    // TODO: persist toggle changes (DataStore) and feed them back into the sync
-    //  engine's type filter; for now they live only in this composition.
-    val typeEnabled = remember {
-        mutableStateMapOf<HealthDataType, Boolean>().apply { putAll(state.typeEnabled) }
+fun SettingsScreen(
+    onBack: () -> Unit,
+    vm: SettingsViewModel? = null,
+    onRequestPermissions: () -> Unit = {},
+) {
+    // Real state from the VM when present; otherwise the static sample (previews / scaffolding).
+    val state = if (vm != null) {
+        vm.uiState.collectAsState().value
+    } else {
+        SampleSettings
     }
 
     // --- Destructive-reset confirmation dialog visibility ------------------
     var showResetDialog by remember { mutableStateOf(false) }
+
+    // After returning from the Health Connect consent flow (the in-app result OR the system HC
+    // settings), re-read per-type grant state so the permission rows reflect reality. Mirrors how
+    // MainActivity refreshes its own granted flag on resume.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, vm) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) vm?.refreshPermissions()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     HbScaffold(
         title = "Settings",
@@ -138,18 +139,14 @@ fun SettingsScreen(onBack: () -> Unit) {
                 if (index > 0) RowDivider()
                 PermissionRow(
                     type = type,
-                    granted = state.permissionGranted[type] ?: false,
+                    granted = state.permissionByType[type] ?: false,
                 )
             }
         }
         Spacer(Modifier.height(12.dp))
         HbGhostButton(
             text = "Re-trigger permission grant",
-            onClick = {
-                // TODO: launch HealthConnectManager.permissionsLauncherContract() with
-                //  REQUIRED_PERMISSIONS via rememberLauncherForActivityResult, then refresh
-                //  permissionStatusByType() on the returned result.
-            },
+            onClick = onRequestPermissions,
         )
 
         Spacer(Modifier.height(32.dp))
@@ -162,10 +159,10 @@ fun SettingsScreen(onBack: () -> Unit) {
                 if (index > 0) RowDivider()
                 DataTypeToggleRow(
                     type = type,
-                    enabled = typeEnabled[type] ?: true,
+                    enabled = state.enabledByType[type] ?: true,
                     onToggle = { checked ->
-                        typeEnabled[type] = checked
-                        // TODO: persist + propagate to the sync engine type filter.
+                        // Persist + reflect through the VM (no-op in the preview/sample path).
+                        vm?.setTypeEnabled(type, checked)
                     },
                 )
             }
@@ -179,7 +176,8 @@ fun SettingsScreen(onBack: () -> Unit) {
         HbCard {
             StatRow(label = "Records stored", value = formatCount(state.fingerprintCount))
             RowDivider()
-            StatRow(label = "Storage size", value = formatBytes(state.storageBytes))
+            // VM emits a pre-formatted label; render it directly (bypassing formatBytes).
+            StatRow(label = "Storage size", value = state.storageLabel)
         }
         Spacer(Modifier.height(12.dp))
         DangerButton(
@@ -200,7 +198,7 @@ fun SettingsScreen(onBack: () -> Unit) {
         // --- 4. About --------------------------------------------------------
         HbSectionLabel("About")
         Spacer(Modifier.height(8.dp))
-        AboutCard(appVersion = state.appVersion)
+        AboutCard(appVersion = APP_VERSION)
 
         Spacer(Modifier.height(24.dp))
     }
@@ -211,9 +209,9 @@ fun SettingsScreen(onBack: () -> Unit) {
             onDismiss = { showResetDialog = false },
             onConfirm = {
                 showResetDialog = false
-                // TODO: clear fingerprints + sync_log via FingerprintDatabase
-                //  (FingerprintDao + SyncLogDao) on a background dispatcher, then
-                //  refresh the DB stats above.
+                // Clears the fingerprint ledger (sync_log + Health Connect untouched), then the
+                // VM refreshes the record count + storage label above.
+                vm?.resetFingerprints()
             },
         )
     }
@@ -532,16 +530,8 @@ private fun formatCount(value: Int): String {
     return "%,d".format(value)
 }
 
-/** Compact human-readable byte size (e.g. 2310000 -> "2.2 MB"). */
-private fun formatBytes(bytes: Long): String {
-    if (bytes < 1024) return "$bytes B"
-    val kb = bytes / 1024.0
-    if (kb < 1024) return "%.0f KB".format(kb)
-    val mb = kb / 1024.0
-    if (mb < 1024) return "%.1f MB".format(mb)
-    val gb = mb / 1024.0
-    return "%.1f GB".format(gb)
-}
+// Storage size is now pre-formatted by SettingsViewModel (state.storageLabel), so the byte
+// formatter that used to live here was removed — the screen renders the label string directly.
 
 // ===========================================================================
 // Previews

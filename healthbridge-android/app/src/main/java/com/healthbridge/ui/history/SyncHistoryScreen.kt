@@ -18,6 +18,7 @@ import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,14 +62,25 @@ import java.util.Locale
  * Per the PRD this screen is read-only — there is intentionally NO delete
  * affordance. When no syncs exist yet, an empty state is shown instead.
  *
- * Real data will be sourced from the sync log via [com.healthbridge.sync.SyncLogger]
- * / the Room `sync_log` table; for now a sample list drives the layout.
+ * Real data is sourced from the sync log via [HistoryViewModel] (backed by
+ * [com.healthbridge.sync.SyncLogger] / the Room `sync_log` table). When no
+ * [vm] is supplied (e.g. @Preview), a sample list drives the layout.
+ *
+ * @param vm optional [HistoryViewModel]; when present, real persisted sessions
+ *        are collected from [HistoryUiState]. When null, sample data is used so
+ *        previews keep compiling.
  */
 @Composable
-fun SyncHistoryScreen(onBack: () -> Unit) {
-    // TODO: replace with sessions collected from SyncLogger / SyncLogDao.getAll(),
-    //       hoisted via a ViewModel and observed as State. Sort newest-first.
-    val sessions = remember { sampleSyncSessions() }
+fun SyncHistoryScreen(
+    onBack: () -> Unit,
+    vm: HistoryViewModel? = null,
+) {
+    val sessions: List<SyncSession> = if (vm != null) {
+        val state by vm.uiState.collectAsState()
+        state.sessions
+    } else {
+        remember { sampleSyncSessions() }
+    }
 
     HbScaffold(
         title = "Sync History",

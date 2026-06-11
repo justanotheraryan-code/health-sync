@@ -93,6 +93,21 @@ data class SyncLogEntity(
 
 // endregion
 
+// region Query projections
+
+/**
+ * Projection for [FingerprintDao.countByType]: how many fingerprints exist per data type.
+ * [dataType] holds the [com.healthbridge.parser.HealthDataType] enum name (e.g. "STEPS");
+ * consumers map it back via `HealthDataType.entries.firstOrNull { it.name == row.dataType }`,
+ * dropping unknown names.
+ */
+data class TypeCount(
+    @ColumnInfo(name = "dataType") val dataType: String,
+    @ColumnInfo(name = "cnt") val cnt: Int
+)
+
+// endregion
+
 // region DAOs
 
 @Dao
@@ -120,6 +135,13 @@ interface FingerprintDao {
     /** Wipe the dedup ledger (Settings -> reset). */
     @Query("DELETE FROM fingerprints")
     suspend fun clear()
+
+    /**
+     * Count of stored fingerprints grouped by data type. The `dataType` column holds the
+     * [com.healthbridge.parser.HealthDataType] enum name; map back via guarded enum decode.
+     */
+    @Query("SELECT dataType, COUNT(*) AS cnt FROM fingerprints GROUP BY dataType")
+    suspend fun countByType(): List<TypeCount>
 }
 
 @Dao

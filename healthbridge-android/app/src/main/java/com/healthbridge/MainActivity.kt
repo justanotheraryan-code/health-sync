@@ -80,4 +80,18 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    /**
+     * Re-read the live HC grant state whenever the activity resumes. This covers the case where the
+     * user leaves the app to toggle permissions in the Health Connect settings app and returns: the
+     * launcher callback only fires for our own request sheet, so onResume is the reliable hook for
+     * externally-changed grants. Safe to run unconditionally — [HealthConnectManager.hasAllPermissions]
+     * returns false when HC is unavailable.
+     */
+    override fun onResume() {
+        super.onResume()
+        lifecycleScope.launch {
+            permissionsGranted.value = healthConnectManager.hasAllPermissions()
+        }
+    }
 }

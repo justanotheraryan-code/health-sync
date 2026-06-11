@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>A11Y pending</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="ambient"></div>
+  <div class="device" aria-label="HealthBridge">
+    <div class="statusbar" aria-hidden="true"><span id="sb-time">9:41</span></div>
+    <main class="stage" id="stage"></main>
+    <div class="sheet-host" id="sheet-host" aria-hidden="true"></div>
+    <div class="toast-host" id="toast-host" role="status" aria-live="polite"></div>
+    <div id="route-announcer" class="sr-only" role="status" aria-live="polite"></div>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="icons.js"></script>
+  <script src="app.js"></script>
+  <script src="screens.js"></script>
+  <script>
+  (function () {
+    const fails = [], log = [];
+    const ok = (name, cond) => { if (cond) log.push('OK ' + name); else fails.push('FAIL ' + name); };
+    const active = () => document.querySelector('#stage .screen.active');
+    function waitFor(desc, pred, then, t) {
+      const s = performance.now();
+      const iv = setInterval(() => {
+        let v = false; try { v = pred(); } catch (e) {}
+        if (v) { clearInterval(iv); then(); }
+        else if (performance.now() - s > (t || 4000)) { clearInterval(iv); fails.push('TIMEOUT ' + desc); finish(); }
+      }, 40);
+    }
+    function finish() {
+      const pass = fails.length === 0;
+      document.title = 'A11Y ' + (pass ? 'PASS' : 'FAIL') + ' checks=' + (log.length + fails.length) +
+        ' fails=' + fails.length + (fails.length ? ' :: ' + fails.join(' | ') : '');
+      const d = document.createElement('div'); d.id = 'a11y-result'; d.textContent = document.title;
+      document.body.appendChild(d);
+    }
+
+    HB.boot();
+    // jump straight to Settings (has switches + the destructive confirm dialog)
+    HB.engine.grantAllPermissions();
+    HB.reset('settings');
+
+    waitFor('settings ready', () => active() && active().dataset.screen === 'settings' && !HB.isAnimating(), () => {
+      const scr = active();
+      // --- static semantics ---
+      ok('exactly one <h1> on screen', scr.querySelectorAll('h1').length === 1);
+      ok('has section <h2> headings', scr.querySelectorAll('h2').length >= 2);
+      ok('7 role=switch toggles', scr.querySelectorAll('input[role="switch"]').length === 7);
+      ok('stage is <main> landmark', document.getElementById('stage').tagName.toLowerCase() === 'main');
+      ok('route-announcer is a live region', (document.getElementById('route-announcer') || {}).getAttribute &&
+        document.getElementById('route-announcer').getAttribute('aria-live') === 'polite');
+      ok('decorative icons are aria-hidden', !!scr.querySelector('svg[aria-hidden="true"]'));
+
+      // --- open the destructive confirm dialog (last settings row) ---
+      const rows = scr.querySelectorAll('.slist .srow');
+      const trigger = rows[rows.length - 1];
+      trigger.focus();
+      const triggerWasFocused = document.activeElement === trigger;
+      trigger.click();
+
+      waitFor('dialog open', () => document.getElementById('sheet-host').classList.contains('is-open'), () => {
+        const sheet = document.querySelector('#sheet-host .sheet');
+        ok('dialog has role=dialog', sheet && sheet.getAttribute('role') === 'dialog');
+        ok('dialog is aria-modal', sheet && sheet.getAttribute('aria-modal') === 'true');
+        ok('dialog labelled by title', sheet && !!sheet.getAttribute('aria-labelledby') &&
+          !!document.getElementById(sheet.getAttribute('aria-labelledby')));
+        ok('background <main> is inert', document.getElementById('stage').hasAttribute('inert'));
+        ok('focus moved into dialog', sheet && sheet.contains(document.activeElement));
+
+        // --- Escape should close + restore focus + un-inert ---
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        waitFor('dialog closed on Escape', () => !document.getElementById('sheet-host').classList.contains('is-open'), () => {
+          ok('background no longer inert', !document.getElementById('stage').hasAttribute('inert'));
+          ok('focus restored to trigger', triggerWasFocused && document.activeElement === trigger);
+          // --- Tab focus trap: re-open and verify wrap ---
+          trigger.click();
+          waitFor('dialog reopen', () => document.getElementById('sheet-host').classList.contains('is-open'), () => {
+            const sheet2 = document.querySelector('#sheet-host .sheet');
+            const tabbables = HB._tabbable(sheet2);
+            ok('dialog has focusable controls', tabbables.length >= 1);
+            // focus last, Tab forward → should wrap to first
+            const last = tabbables[tabbables.length - 1];
+            last.focus();
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+            ok('Tab wraps from last → first (focus stays trapped)', sheet2.contains(document.activeElement));
+            HB._closeSheet && HB._closeSheet();
+            setTimeout(finish, 200);
+          });
+        });
+      });
+    }, 6000);
+  })();
+  </script>
+</body>
+</html>

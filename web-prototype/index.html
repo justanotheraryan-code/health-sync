@@ -26,10 +26,11 @@
   <!-- Ambient deep-navy field behind the device, per PRD: "linear gradients of deep navy to near-black" -->
   <div class="ambient" aria-hidden="true"></div>
 
-  <!-- The device. On desktop it reads as a phone; on mobile it fills the screen. -->
-  <main class="device" role="application" aria-label="HealthBridge">
-    <!-- Faux Android status bar for realism -->
-    <div class="statusbar">
+  <!-- The device. On desktop it reads as a phone; on mobile it fills the screen.
+       (No role="application" — that suppresses the screen-reader virtual cursor.) -->
+  <div class="device" aria-label="HealthBridge">
+    <!-- Faux Android status bar — decorative chrome, hidden from assistive tech. -->
+    <div class="statusbar" aria-hidden="true">
       <span class="statusbar__time" id="sb-time">9:41</span>
       <span class="statusbar__icons">
         <svg viewBox="0 0 18 12" width="17" height="11" aria-hidden="true"><path d="M1 11h2V7H1v4zm4 0h2V5H5v6zm4 0h2V3H9v8zm4 0h2V1h-2v10z" fill="currentColor"/></svg>
@@ -38,15 +39,19 @@
       </span>
     </div>
 
-    <!-- Screens are rendered into the stage by the router -->
-    <div class="stage" id="stage"></div>
+    <!-- Screens are rendered into the stage by the router. The active screen's <h1>
+         names the view; this is the main landmark. -->
+    <main class="stage" id="stage"></main>
 
-    <!-- Bottom-sheet host (settings confirmations etc.) -->
+    <!-- Bottom-sheet host (settings confirmations, file picker). Inert until opened. -->
     <div class="sheet-host" id="sheet-host" aria-hidden="true"></div>
 
-    <!-- Toast host -->
-    <div class="toast-host" id="toast-host" aria-live="polite"></div>
-  </main>
+    <!-- Toast host — a polite status region. -->
+    <div class="toast-host" id="toast-host" role="status" aria-live="polite" aria-atomic="true"></div>
+
+    <!-- Route/progress announcer: navigation + pipeline milestones for screen readers. -->
+    <div id="route-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  </div>
 
   <!-- Plain scripts (no build step, no ES-module CORS issues) sharing a global HB namespace -->
   <script src="data.js"></script>

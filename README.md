@@ -91,6 +91,9 @@ Faithful to the PRD's tokens — a precision instrument, not a wellness app:
 - **Type** — monospace for every data value; sans (Inter) for labels
 - **No shadows** anywhere — elevation is expressed purely through surface-color steps
 - **Radii** 12 / 8 / 4 dp · **4-dp spacing grid** · shared-axis screen transitions
+- **Accessibility (WCAG AA)** — focus-trapped dialogs (ported from **MUI's** `FocusTrap`),
+  focus management + live-region announcements on navigation, semantic headings/landmarks,
+  `role=switch` toggles, visible focus rings, ≥44px targets, AA contrast — all verified headlessly
 
 Tokens live in [`web-prototype/styles.css`](web-prototype/styles.css) (`:root`) and
 [`healthbridge-android/.../ui/theme/Color.kt`](healthbridge-android/app/src/main/java/com/healthbridge/ui/theme/) — kept identical.

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Teal heart + pulse, centered within the adaptive-icon safe zone (24-unit art scaled 2.25x). -->
+    <group
+        android:translateX="27"
+        android:translateY="27"
+        android:scaleX="2.25"
+        android:scaleY="2.25">
+        <path
+            android:strokeColor="#00D4B8"
+            android:strokeWidth="1.7"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:fillColor="#00000000"
+            android:pathData="M12,21s-7,-4.6 -9.3,-9C1,8.7 2.7,5.5 6,5.5c2,0 3.3,1.4 4,2.5 0.7,-1.1 2,-2.5 4,-2.5 3.3,0 5,3.2 3.3,6.5" />
+        <path
+            android:strokeColor="#00D4B8"
+            android:strokeWidth="1.9"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:fillColor="#00000000"
+            android:pathData="M3.5,12h3.2l1.5,-2.6L11,16l1.9,-4.2 1.2,2.2 1.1,-1.4h5.3" />
+    </group>
+</vector>

@@ -72,6 +72,26 @@ labels, 12/8/4 dp corner radii, a 4-dp spacing grid, and **no shadows** — elev
 expressed purely through surface-color steps. Motion is shared-axis screen transitions
 plus functional micro-interactions (ripples, animated counters, a drawn success check).
 
+## Accessibility (WCAG 2.1 AA)
+
+Accessibility is engineered, not bolted on — the focus-management patterns are ported from
+**MUI's** `Unstable_TrapFocus` / `Modal`:
+
+- **Accessible dialogs** — the bottom sheet is a `role="dialog"` + `aria-modal`, with a real
+  **focus trap** (Tab/Shift+Tab wrap using MUI's tabbable-ordering algorithm), **Escape to
+  close**, **focus restoration** to the trigger, and the background `<main>` set `inert`.
+- **Focus management on navigation** — focus moves to the new screen's `<h1>` and the view is
+  announced via a polite live region (`#route-announcer`).
+- **Semantics** — one `<h1>` per screen, `<h2>` section headings, a `<main>` landmark,
+  `role="switch"` toggles, and `aria-hidden` on all decorative icons/illustrations.
+- **Live progress** — Processing/Writing announce stage milestones (not the rapid counters,
+  which are `aria-hidden` to avoid spam).
+- **Visible focus** — teal `:focus-visible` rings (keyboard-only), `≥44px` touch targets,
+  AA-contrast text, plus `prefers-reduced-motion` and `forced-colors` support.
+
+Verified headlessly by [`a11ycheck.html`](a11ycheck.html) (15 assertions: dialog semantics,
+focus in/out of the trap, `inert`, single-`h1`, `role=switch`, focus restore).
+
 ## Files
 
 | File | Role |
@@ -83,6 +103,7 @@ plus functional micro-interactions (ripples, animated counters, a drawn success 
 | [app.js](app.js) | Router, shared-axis transitions, sheets, toasts, counters |
 | [screens.js](screens.js) | All 8 screens |
 | [selftest.html](selftest.html) | Drives the full flow headless to assert no runtime errors |
+| [a11ycheck.html](a11ycheck.html) | Headless accessibility assertions (dialog, focus trap, semantics) |
 
 ## Self-test
 

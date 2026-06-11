@@ -5,7 +5,10 @@
 (function (HB) {
   const h = HB.h, icon = HB.icon, fmt = HB.fmt, S = HB.state, E = HB.engine, D = HB.data;
 
-  const label = (t, cls) => h('div', { class: 'label ' + (cls || '') }, t);
+  // Section labels (`sec-label`) double as section headings → render them as <h2> so screen
+  // readers can navigate the page structure; inline labels stay as plain text.
+  const label = (t, cls) =>
+    h((cls && cls.indexOf('sec-label') >= 0) ? 'h2' : 'div', { class: 'label ' + (cls || '') }, t);
   const dataTypeIcon = (id) => h('span', { class: 'drow__icon', html: icon(D.TYPE_BY_ID[id].icon) });
 
   HB.screens = {};
@@ -18,14 +21,14 @@
     const el = h('div', { class: 'screen' });
     const ob = h('div', { class: 'ob' });
 
-    const slide1 = h('div', { class: 'ob__slide is-current' }, [
-      h('div', { class: 'ob__art' }, flowDiagram()),
-      h('div', { class: 'h1' }, 'Your health data, your device.'),
+    const slide1 = h('div', { class: 'ob__slide is-current', role: 'group', 'aria-roledescription': 'slide', 'aria-label': 'Slide 1 of 3' }, [
+      h('div', { class: 'ob__art', 'aria-hidden': 'true' }, flowDiagram()),
+      h('h1', { class: 'h1' }, 'Your health data, your device.'),
       h('p', { class: 'lead' }, 'HealthBridge mirrors your Apple Health export to Google Health Connect — entirely on-device. No account. No cloud. No internet.'),
     ]);
-    const slide2 = h('div', { class: 'ob__slide' }, [
-      h('div', { class: 'ob__art' }, h('div', { class: 'flownode__box is-hero', style: 'width:96px;height:96px;border-radius:24px', html: icon('iphone') })),
-      h('div', { class: 'h1' }, 'Export from your iPhone'),
+    const slide2 = h('div', { class: 'ob__slide', role: 'group', 'aria-roledescription': 'slide', 'aria-label': 'Slide 2 of 3' }, [
+      h('div', { class: 'ob__art', 'aria-hidden': 'true' }, h('div', { class: 'flownode__box is-hero', style: 'width:96px;height:96px;border-radius:24px', html: icon('iphone') })),
+      h('h1', { class: 'h1' }, 'Export from your iPhone'),
       h('div', { class: 'steps-list' }, [
         stepItem(1, 'Open the <b>Health</b> app'),
         stepItem(2, 'Tap your <b>profile icon</b>, top-right'),
@@ -33,9 +36,9 @@
         stepItem(4, 'Save the <b>.zip</b> and transfer it to this phone'),
       ]),
     ]);
-    const slide3 = h('div', { class: 'ob__slide' }, [
-      h('div', { class: 'ob__art' }, h('div', { class: 'flownode__box is-hero', style: 'width:96px;height:96px;border-radius:24px', html: icon('shield') })),
-      h('div', { class: 'h1' }, 'Grant Health Connect access'),
+    const slide3 = h('div', { class: 'ob__slide', role: 'group', 'aria-roledescription': 'slide', 'aria-label': 'Slide 3 of 3' }, [
+      h('div', { class: 'ob__art', 'aria-hidden': 'true' }, h('div', { class: 'flownode__box is-hero', style: 'width:96px;height:96px;border-radius:24px', html: icon('shield') })),
+      h('h1', { class: 'h1' }, 'Grant Health Connect access'),
       h('p', { class: 'lead' }, 'HealthBridge writes these data types to Health Connect. You can turn any of them off later in Settings.'),
       h('div', { class: 'permgrid' }, D.TYPES.map(t =>
         h('span', { class: 'permpill' }, [h('span', { html: icon('check') }), t.label]))),
@@ -43,7 +46,7 @@
 
     const slides = [slide1, slide2, slide3];
     const slidesWrap = h('div', { class: 'ob__slides' }, slides);
-    const dots = h('div', { class: 'ob__dots' }, slides.map((_, k) => h('span', { class: 'ob__dot' + (k === 0 ? ' is-on' : '') })));
+    const dots = h('div', { class: 'ob__dots', 'aria-hidden': 'true' }, slides.map((_, k) => h('span', { class: 'ob__dot' + (k === 0 ? ' is-on' : '') })));
 
     const primary = h('button', { class: 'btn btn--primary btn--block', onclick: next }, 'Next');
     const skip = h('button', { class: 'btn btn--text', onclick: finish }, 'Skip');
@@ -57,6 +60,10 @@
       [...dots.children].forEach((d, k) => d.classList.toggle('is-on', k === i));
       primary.textContent = i === 2 ? 'Grant access & continue' : 'Next';
       skip.style.display = i === 2 ? 'none' : '';
+      // a11y: focus the new slide's heading + announce position
+      const heading = slides[i].querySelector('h1');
+      if (heading) { heading.setAttribute('tabindex', '-1'); try { heading.focus({ preventScroll: true }); } catch (e) {} }
+      HB.announce('Slide ' + (i + 1) + ' of 3' + (heading ? ': ' + heading.textContent : ''));
     }
     function next() { if (i < 2) { i++; paint(); } else finish(); }
     function finish() {
@@ -260,7 +267,7 @@
 
     function barOf() { bar1 = h('div', { class: 'progress__bar' }); return h('div', { class: 'progress', style: 'margin-top:12px;max-width:220px' }, bar1); }
     function parseBlock() {
-      counterEl = h('div', { class: 'counter', style: 'margin-top:10px;display:none' }, '0');
+      counterEl = h('div', { class: 'counter', style: 'margin-top:10px;display:none', 'aria-hidden': 'true' }, '0');
       return counterEl;
     }
     function dedupBlock() {
@@ -290,6 +297,7 @@
     function run() {
       // ---- Stage 1: Unpack (cancellable) ----
       setState(0, 'is-active');
+      HB.announce('Unpacking the export file');
       setTimeout(() => { bar1.style.transition = 'width 1100ms cubic-bezier(0.2,0,0,1)'; bar1.style.width = '100%'; }, 30);
 
       setTimeout(() => {
@@ -297,6 +305,7 @@
         cancel.style.display = 'none'; // PRD: no cancel during Stage 2/3
         // ---- Stage 2: Parse ----
         setState(1, 'is-active');
+        HB.announce('Reading health records');
         counterEl.style.display = '';
         const total = delta.scannedTotal;
         const typeLabels = D.TYPES.filter(t => S.enabled[t.id]);
@@ -312,6 +321,7 @@
           setState(1, 'is-done');
           // ---- Stage 3: Dedup ----
           setState(2, 'is-active');
+          HB.announce('Checking ' + fmt.int(delta.scannedTotal) + ' records for duplicates');
           steps[2].detailEl.textContent = 'Checking against ' + fmt.int(known) + ' known records…';
           previewWrap.style.display = '';
           const rows = delta.rows.filter(r => r.enabled);
@@ -330,6 +340,7 @@
           setTimeout(() => {
             setState(2, 'is-done');
             steps[2].detailEl.textContent = 'Done · ' + fmt.int(delta.newTotal) + ' new of ' + fmt.int(delta.scannedTotal);
+            HB.announce(fmt.int(delta.newTotal) + ' new records ready to review');
             setTimeout(() => HB.replace('delta', { fileId }), 650);
           }, rows.length * 150 + 500);
         });
@@ -350,8 +361,8 @@
       return HB.screen({
         appbar: HB.appbar({ title: 'Review', back: goHome }),
         body: [h('div', { class: 'empty', style: 'margin-top:48px' }, [
-          h('div', { class: 'empty__icon', html: icon('checkCircle') }),
-          h('div', { class: 'h2' }, 'Nothing new to sync'),
+          h('div', { class: 'empty__icon', 'aria-hidden': 'true', html: icon('checkCircle') }),
+          h('h2', { class: 'h2' }, 'Nothing new to sync'),
           h('p', { class: 'lead', style: 'max-width:260px' }, 'All records from this export are already on your device. Your Health Connect data is up to date.'),
         ])],
         footer: h('button', { class: 'btn btn--primary btn--block', onclick: goHome }, 'Done'),
@@ -365,7 +376,7 @@
       appbar: HB.appbar({ title: 'Review', back: goHome }),
       body: [
         h('div', {}, [
-          h('div', { class: 'h1', style: 'margin-bottom:6px' }, [
+          h('h2', { class: 'h1', style: 'margin-bottom:6px' }, [
             'Ready to sync ', h('span', { class: 'data teal' }, fmt.int(delta.newTotal)), ' new records',
           ]),
           h('p', { class: 'lead' }, fmt.int(delta.skippedTotal) + ' records already on this device — skipped.'),
@@ -425,7 +436,7 @@
     const batches = Math.max(1, Math.ceil(total / 500)); // PRD: HC batch limit 500
 
     const bar = h('div', { class: 'progress__bar' });
-    const counter = h('div', { class: 'counter' }, '0');
+    const counter = h('div', { class: 'counter', 'aria-hidden': 'true' }, '0');
     const sub = h('div', { class: 'caption mono', style: 'margin-top:8px' }, 'Batch 0 / ' + batches);
 
     const liveBlock = h('div', { class: 'stack', style: 'gap:24px' }, [
@@ -451,6 +462,7 @@
     return el;
 
     function run() {
+      HB.announce('Writing ' + fmt.int(total) + ' records to Health Connect');
       const dur = Math.min(3200, Math.max(1600, total * 1.2));
       setTimeout(() => { bar.style.transition = `width ${dur}ms cubic-bezier(0.2,0,0,1)`; bar.style.width = '100%'; }, 30);
       HB.countTo(0, total, dur, v => {
@@ -465,8 +477,8 @@
       E.commitSync(fileId, delta, 1000 + total);
       region.innerHTML = '';
       const success = h('div', { class: 'success', style: 'margin-top:40px' }, [
-        h('div', { class: 'check', html: '<svg viewBox="0 0 52 52" fill="none"><path class="check__path" d="M14 27 22 35 38 17"/></svg>' }),
-        h('div', { class: 'h1' }, 'Sync complete'),
+        h('div', { class: 'check', 'aria-hidden': 'true', html: '<svg viewBox="0 0 52 52" fill="none"><path class="check__path" d="M14 27 22 35 38 17"/></svg>' }),
+        h('h2', { class: 'h1' }, 'Sync complete'),
         h('p', { class: 'lead', style: 'max-width:260px' }, [
           h('span', { class: 'data teal' }, fmt.int(total)), ' records added to Health Connect.',
         ]),
@@ -474,6 +486,8 @@
       ]);
       region.appendChild(success);
       done.disabled = false;
+      HB.announce('Sync complete. ' + fmt.int(total) + ' records added to Health Connect.');
+      try { done.focus(); } catch (e) {}
     }
   };
 
@@ -484,8 +498,8 @@
     let body;
     if (!S.history.length) {
       body = [h('div', { class: 'empty', style: 'margin-top:48px' }, [
-        h('div', { class: 'empty__icon', html: icon('history') }),
-        h('div', { class: 'h2' }, 'No syncs yet'),
+        h('div', { class: 'empty__icon', 'aria-hidden': 'true', html: icon('history') }),
+        h('h2', { class: 'h2' }, 'No syncs yet'),
         h('p', { class: 'lead', style: 'max-width:240px' }, 'Your import history will appear here once you’ve written your first records.'),
       ])];
     } else {
@@ -550,7 +564,7 @@
 
     // --- Data type toggles (US-04) ---
     const typeList = h('div', { class: 'slist' }, D.TYPES.map(t => {
-      const input = h('input', { type: 'checkbox', 'aria-label': t.label });
+      const input = h('input', { type: 'checkbox', role: 'switch', 'aria-label': t.label });
       if (S.enabled[t.id]) input.checked = true;
       input.addEventListener('change', () => { S.enabled[t.id] = input.checked; });
       return h('div', { class: 'srow' }, [

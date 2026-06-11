@@ -14,8 +14,8 @@
   --teal:          #00D4B8;   /* TealAccent — the only accent */
   --teal-dim:      #0A9C8A;
   --text:          #E8EDF5;   /* TextPrimary */
-  --text-2:        #8A96B0;   /* TextSecondary */
-  --text-3:        #56607A;   /* tertiary / disabled */
+  --text-2:        #8A96B0;   /* TextSecondary — ~6:1 on --bg (WCAG AA) */
+  --text-3:        #6E7B9E;   /* tertiary — lightened to ~4.6:1 on --bg for AA on small text */
   --error:         #FF4D4D;   /* ErrorRed */
   --divider:       #232B3E;   /* DividerColor */
   --warn:          #F5B544;
@@ -172,7 +172,7 @@ input, textarea { font-family: inherit; }
   flex: 1 1 auto;
 }
 .appbar__btn {
-  width: 40px; height: 40px; flex: 0 0 40px;
+  width: 44px; height: 44px; flex: 0 0 44px;   /* >=44px touch target (WCAG 2.5.5) */
   display: grid; place-items: center;
   border-radius: 999px; color: var(--text);
   transition: background var(--dur-micro) var(--ease-std);
@@ -529,6 +529,56 @@ input, textarea { font-family: inherit; }
 .mount > *:nth-child(3){animation-delay:100ms} .mount > *:nth-child(4){animation-delay:140ms}
 .mount > *:nth-child(5){animation-delay:180ms} .mount > *:nth-child(6){animation-delay:220ms}
 .mount > *:nth-child(7){animation-delay:260ms} .mount > *:nth-child(8){animation-delay:300ms}
+
+/* ============================================================================
+   Accessibility
+   ========================================================================== */
+
+/* Screen-reader-only: present to AT, visually hidden (the standard a11y clip). */
+.sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+
+/* Visible keyboard focus (WCAG 2.4.7). Only for keyboard users via :focus-visible,
+   so pointer taps stay clean. A teal ring reads clearly on the dark surfaces. */
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.btn:focus-visible,
+.drow:focus-visible,
+.srow:focus-visible,
+.dropzone:focus-visible,
+.permpill:focus-visible,
+.ob__dot:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 3px;
+}
+/* The visually-hidden checkbox drives the styled switch: surface its focus ring on the track. */
+.switch input:focus-visible ~ .switch__track {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+/* Programmatic focus targets (screen <h1>s, the dialog container) receive focus on
+   navigation/open so AT lands there — but they're not keyboard-tabbable, so suppress the
+   ring. Real interactive controls aren't tabindex="-1", so they keep their :focus-visible ring. */
+[tabindex="-1"]:focus,
+[tabindex="-1"]:focus-visible { outline: none; }
+
+/* Hints carry real information, so meet AA contrast (route to secondary, not tertiary). */
+.hint { color: var(--text-2); }
+
+/* Honor reduced-transparency / forced-colors gracefully. */
+@media (forced-colors: active) {
+  .btn, .card, .drow, .srow, .chip, .switch__track { border: 1px solid currentColor; }
+  :focus-visible { outline: 2px solid Highlight; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }

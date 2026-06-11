@@ -24,6 +24,74 @@
   }
   HB.h = h;
 
+  /* ---- accessibility: focus trap + announcer (ported from MUI's FocusTrap) ---
+     MUI Unstable_TrapFocus uses this candidate selector + tabbable ordering
+     (positive tabindex first in document order, then natural-order tabindex 0),
+     skipping disabled / hidden / non-roving-radio nodes. */
+  const FOCUSABLE_SELECTOR = [
+    'input', 'select', 'textarea', 'a[href]', 'button', '[tabindex]',
+    'audio[controls]', 'video[controls]', '[contenteditable]:not([contenteditable="false"])',
+  ].join(',');
+
+  function getTabIndex(node) {
+    const attr = parseInt(node.getAttribute('tabindex') || '', 10);
+    if (!Number.isNaN(attr)) return attr;
+    if (node.isContentEditable) return 0;
+    return node.tabIndex;
+  }
+  function isFocusableCandidate(node) {
+    if (node.disabled) return false;
+    if (node.tagName === 'INPUT' && node.type === 'hidden') return false;
+    // visibility: skip display:none / detached (offsetParent null unless position:fixed)
+    if (node.offsetParent === null && getComputedStyle(node).position !== 'fixed') return false;
+    return true;
+  }
+  // MUI's defaultGetTabbable, in vanilla JS.
+  function tabbable(root) {
+    const regular = [];
+    const ordered = [];
+    Array.prototype.forEach.call(root.querySelectorAll(FOCUSABLE_SELECTOR), (node, i) => {
+      const ti = getTabIndex(node);
+      if (ti === -1 || !isFocusableCandidate(node)) return;
+      if (ti === 0) regular.push(node);
+      else ordered.push({ order: i, ti, node });
+    });
+    return ordered
+      .sort((a, b) => (a.ti === b.ti ? a.order - b.order : a.ti - b.ti))
+      .map((o) => o.node)
+      .concat(regular);
+  }
+  HB._tabbable = tabbable;
+
+  // Constrain Tab/Shift+Tab within `container` (MUI loopFocus). Returns a release fn.
+  HB.trapFocus = function (container) {
+    function onKeydown(e) {
+      if (e.key !== 'Tab') return;
+      const list = tabbable(container);
+      if (!list.length) { e.preventDefault(); return; }
+      const first = list[0];
+      const last = list[list.length - 1];
+      const active = document.activeElement;
+      const inside = container.contains(active);
+      if (e.shiftKey) {
+        if (!inside || active === first || active === container) { e.preventDefault(); last.focus(); }
+      } else if (!inside || active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    document.addEventListener('keydown', onKeydown, true);
+    return () => document.removeEventListener('keydown', onKeydown, true);
+  };
+
+  // Announce a message to screen readers via the polite live region.
+  HB.announce = function (msg) {
+    const el = document.getElementById('route-announcer');
+    if (!el || !msg) return;
+    el.textContent = '';                       // reset so repeats re-announce
+    setTimeout(() => { el.textContent = msg; }, 40);
+  };
+
   /* ---- app bar ------------------------------------------------------------- */
   // opts: { back: bool|fn, title, action: {icon, onClick, label} }
   HB.appbar = function (opts) {
@@ -36,7 +104,9 @@
       ? h('button', { class: 'appbar__btn', 'aria-label': opts.action.label || 'Action',
           onclick: opts.action.onClick, html: HB.icon(opts.action.icon) })
       : h('div', { class: 'appbar__btn appbar__btn--spacer' });
-    return h('div', { class: 'appbar' }, [left, h('div', { class: 'appbar__title' }, opts.title || ''), right]);
+    // The title is the screen's <h1> and the focus target on navigation (tabindex=-1).
+    const title = h('h1', { class: 'appbar__title', tabindex: '-1' }, opts.title || '');
+    return h('div', { class: 'appbar' }, [left, title, right]);
   };
 
   /* ---- screen scaffold ----------------------------------------------------- */
@@ -100,6 +170,7 @@
       animating = false;
       if (oldEl && oldEl !== newEl && oldEl.parentNode) oldEl.remove();
       if (newEl._onMount) { try { newEl._onMount(newEl); } catch (e) { console.error(e); } }
+      focusNewScreen(newEl);
     };
     // run onMount slightly into the transition so animations feel responsive
     if (newEl._onMount) setTimeout(() => { try { newEl._onMount(newEl); } catch (e) { console.error(e); } newEl._onMount = null; }, 60);
@@ -107,6 +178,18 @@
     const settle = () => { if (settled) return; settled = true; done(); };
     newEl.addEventListener('transitionend', settle, { once: true });
     setTimeout(settle, 420); // fallback
+  }
+
+  // After a screen settles, move focus to its <h1> (so keyboard/SR users land on the new
+  // view, not back at the top of the document) and announce the view name politely.
+  function focusNewScreen(screenEl) {
+    const heading = screenEl.querySelector('h1, [data-autofocus]');
+    if (heading) {
+      if (!heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1');
+      try { heading.focus({ preventScroll: true }); } catch (e) {}
+    }
+    const named = screenEl.querySelector('h1, h2, .appbar__title');
+    if (named && named.textContent) HB.announce(named.textContent.trim());
   }
 
   function render(name, params, dir) {
@@ -142,28 +225,58 @@
 
   /* ---- bottom sheet -------------------------------------------------------- */
   // opts: { title, body, actions:[{label, kind, onClick}] }  kind: primary|ghost|danger|text
+  let sheetSeq = 0;
   HB.sheet = function (opts) {
     const host = document.getElementById('sheet-host');
+    const stage = document.getElementById('stage');
+    const trigger = document.activeElement;      // restore focus here on close (MUI restoreFocus)
+    const titleId = 'sheet-title-' + (++sheetSeq);
+    let releaseTrap = null;
+
     const close = () => {
+      if (releaseTrap) { releaseTrap(); releaseTrap = null; }
+      document.removeEventListener('keydown', onEsc, true);
+      if (stage) stage.removeAttribute('inert');
       host.classList.remove('is-open');
       setTimeout(() => { host.innerHTML = ''; host.setAttribute('aria-hidden', 'true'); }, 320);
+      if (trigger && typeof trigger.focus === 'function') {
+        try { trigger.focus(); } catch (e) {}
+      }
     };
+    function onEsc(e) {
+      if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); close(); }
+    }
+
     const actions = (opts.actions || []).map(a =>
       h('button', { class: 'btn btn--block btn--' + (a.kind || 'ghost'),
         onclick: () => { if (a.onClick) a.onClick(); if (a.keepOpen !== true) close(); } }, a.label));
-    const sheet = h('div', { class: 'sheet' }, [
-      h('div', { class: 'sheet__grip' }),
-      opts.title && h('div', { class: 'sheet__title' }, opts.title),
+
+    const sheet = h('div', {
+      class: 'sheet', role: 'dialog', 'aria-modal': 'true', tabindex: '-1',
+      'aria-labelledby': opts.title ? titleId : null,
+      'aria-label': opts.title ? null : (opts.ariaLabel || 'Dialog'),
+    }, [
+      h('div', { class: 'sheet__grip', 'aria-hidden': 'true' }),
+      opts.title && h('div', { class: 'sheet__title', id: titleId }, opts.title),
       opts.body && h('div', { class: 'sheet__body', html: opts.body }),
       opts.content || null,                       // optional rich DOM (e.g. file picker rows)
       actions.length ? h('div', { class: 'sheet__actions' }, actions) : null,
     ]);
+
     host.innerHTML = '';
     host.appendChild(h('div', { class: 'scrim', onclick: close }));
     host.appendChild(sheet);
     host.setAttribute('aria-hidden', 'false');
+    if (stage) stage.setAttribute('inert', '');   // background non-interactive + hidden from AT
     void host.offsetWidth;
     host.classList.add('is-open');
+
+    // Move focus into the dialog (first control, else the dialog itself) and trap it there.
+    const focusables = tabbable(sheet);
+    (focusables[0] || sheet).focus();
+    releaseTrap = HB.trapFocus(sheet);
+    document.addEventListener('keydown', onEsc, true);
+
     HB._closeSheet = close;
     return close;
   };
